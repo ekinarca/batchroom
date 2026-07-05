@@ -1,0 +1,45 @@
+# CasaOS custom-app import for Batchroom.
+# CasaOS -> App Store -> Custom Install -> Import (paste this file).
+name: batchroom
+services:
+  batchroom:
+    image: ghcr.io/ekinarca/batchroom:latest
+    container_name: batchroom
+    restart: unless-stopped
+    ports:
+      - target: 5151
+        published: "5151"
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: /DATA/AppData/batchroom
+        target: /data
+      - type: bind
+        source: /DATA/batchroom/watch
+        target: /watch
+      - type: bind
+        source: /DATA/batchroom/output
+        target: /output
+    environment:
+      - BATCHROOM_WORKERS=2
+    x-casaos:
+      volumes:
+        - container: /data
+          description:
+            en_us: "State: models, queue, job outputs"
+x-casaos:
+  architectures: [amd64, arm64]
+  main: batchroom
+  author: Batchroom contributors
+  category: Media
+  port_map: "5151"
+  scheme: http
+  title:
+    en_us: Batchroom
+  description:
+    en_us: >-
+      Self-hosted AI media processing: batch background removal, resizing,
+      conversion and marketplace preset packs. No meters, no quotas — images
+      never leave your server.
+  tagline:
+    en_us: Your own media pipeline. No meters, no quotas, no cloud.

@@ -1,0 +1,30 @@
+# Batchroom — minimal self-hosted setup.
+#   docker compose up -d
+# UI at http://localhost:5151 — models download on first use into the volume.
+services:
+  batchroom:
+    image: ghcr.io/ekinarca/batchroom:latest
+    # build: .            # uncomment to build locally instead
+    container_name: batchroom
+    restart: unless-stopped
+    ports:
+      - "5151:5151"
+    volumes:
+      - batchroom-data:/data
+      # Watch-folder workflow (optional): drop files into ./watch on the host,
+      # collect results from ./output. Configure folders in /data/watch.yaml, e.g.:
+      #   watch:
+      #     - folder: /watch/products
+      #       recipe: ecom-packshot
+      #       output: /output/products
+      - ./watch:/watch
+      - ./output:/output
+    environment:
+      # Set an API key before exposing beyond localhost (see SECURITY.md):
+      # - BATCHROOM_API_KEY=change-me
+      - BATCHROOM_WORKERS=2        # raise on beefier hardware
+      # - BATCHROOM_MAX_UPLOAD_MB=512
+    # user: "1000:1000"            # match your host user for bind mounts if needed
+
+volumes:
+  batchroom-data:

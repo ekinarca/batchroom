@@ -1,0 +1,34 @@
+Batchroom Pro License (source-available)
+Version 1.0, July 2026
+
+This license applies ONLY to the files under `src/batchroom/pro/`
+("Pro Code"). Everything else in this repository is licensed under the
+MIT License (see LICENSE).
+
+1. Grant. You may view, download, build and modify the Pro Code, and use
+   it for development, evaluation and testing without a license key.
+
+2. Production use. Using Pro Features in production — features that
+   activate only with a valid Batchroom license key, currently:
+   multi-user accounts and roles, priority queueing, and email
+   notifications — requires a valid, unexpired license key issued by the
+   Batchroom maintainers, covering the number of user accounts ("seats")
+   configured on the server.
+
+3. Restrictions. You may not (a) remove, disable or circumvent the
+   license-key checks; (b) redistribute the Pro Code, modified or not,
+   as part of a product or service that competes with Batchroom Pro;
+   (c) issue, sell or forge license keys.
+
+4. Free core promise. Nothing in this license restricts the MIT-licensed
+   core, which is and remains fully functional without any license key.
+
+5. Contributions. By contributing to the Pro Code you agree your
+   contribution is licensed to the maintainers under these same terms
+   and may also be relicensed by them.
+
+6. No warranty. THE PRO CODE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+   ANY KIND. IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY ARISING FROM ITS USE.
+
+Questions and commercial licensing: see docs/PRO.md.

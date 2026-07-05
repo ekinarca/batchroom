@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Batchroom runtime state (never commit user data)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Downloaded model weights (fetched on demand, checksummed)
+models-cache/
+*.onnx
+!tests/**/*.onnx
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Local scratch
+scratch/
+
+# Internal business plan — never publish
+batchroom-plan.md

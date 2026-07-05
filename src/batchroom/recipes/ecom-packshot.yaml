@@ -1,0 +1,23 @@
+# E-commerce packshot: remove the background, place the product on a clean
+# white square, export web + transparent variants.
+name: ecom-packshot
+description: Background removal + white 1:1 canvas + web/transparent export set
+version: 1
+input:
+  formats: [jpg, png, webp, heic, avif, tiff, bmp]
+steps:
+  - op: remove-background
+    model: auto            # isnet-general by default; swap for u2netp on weak hardware
+    alpha_matting: true
+  - op: composite
+    background: "#FFFFFF"
+    padding: 8%
+    aspect: "1:1"
+  - op: preset-pack
+    presets:
+      - { name: web-2048,        size: 2048x2048, format: jpg,  quality: 90 }
+      - { name: web-1024,        size: 1024x1024, format: webp, quality: 85 }
+      - { name: transparent-1500, size: 1500x1500, format: png, background: transparent, fit: pad }
+output:
+  structure: per-preset-folder
+  manifest: true

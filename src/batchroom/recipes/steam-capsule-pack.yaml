@@ -1,0 +1,25 @@
+# Steam store & library capsule set from one piece of key art.
+# Sizes per the current Steamworks graphical asset requirements (2024 update):
+#   Main capsule 1232x706 · Header 920x430 · Small 462x174
+#   Vertical 748x896 · Library capsule 600x900 · Library hero 3840x1240
+# No AI steps — pure geometry. 'cover' crops the art to fill each frame;
+# compose your key art with safe margins around the edges.
+name: steam-capsule-pack
+description: Every Steam capsule size (main/header/small/vertical/library/hero) from one key art
+version: 1
+input:
+  formats: [jpg, png, webp, tiff, bmp]
+steps:
+  - op: preset-pack
+    presets:
+      - { name: main-capsule,    size: 1232x706,  format: png, fit: cover }
+      - { name: header-capsule,  size: 920x430,   format: png, fit: cover }
+      - { name: small-capsule,   size: 462x174,   format: png, fit: cover }
+      - { name: vertical-capsule, size: 748x896,  format: png, fit: cover }
+      - { name: library-capsule, size: 600x900,   format: png, fit: cover }
+      - { name: library-hero,    size: 3840x1240, format: png, fit: cover }
+  - op: rename
+    pattern: "{original}-{preset}"
+output:
+  structure: per-preset-folder
+  manifest: true

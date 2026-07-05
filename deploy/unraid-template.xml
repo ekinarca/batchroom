@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Batchroom</Name>
+  <Repository>ghcr.io/ekinarca/batchroom:latest</Repository>
+  <Registry>https://ghcr.io/ekinarca/batchroom</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/ekinarca/batchroom/discussions</Support>
+  <Project>https://github.com/ekinarca/batchroom</Project>
+  <Overview>Self-hosted AI media processing: batch background removal, resizing, format conversion and marketplace preset packs. No meters, no quotas — images never leave your server. Web UI in 10 languages, REST API, watch folders. AI models download once (checksum-verified) into appdata.</Overview>
+  <Category>MediaApp:Photos Productivity</Category>
+  <WebUI>http://[IP]:[PORT:5151]</WebUI>
+  <Icon>https://raw.githubusercontent.com/ekinarca/batchroom/main/docs/assets/icon.png</Icon>
+  <TemplateURL/>
+  <Config Name="WebUI Port" Target="5151" Default="5151" Mode="tcp" Description="Web UI and API port" Type="Port" Display="always" Required="true" Mask="false">5151</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/batchroom" Mode="rw" Description="State: models, queue database, job outputs" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/batchroom</Config>
+  <Config Name="Watch folders" Target="/watch" Default="/mnt/user/batchroom/watch" Mode="rw" Description="Optional hot folders (configure in /data/watch.yaml)" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/batchroom/watch</Config>
+  <Config Name="Output" Target="/output" Default="/mnt/user/batchroom/output" Mode="rw" Description="Optional output target for watch-folder jobs" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/batchroom/output</Config>
+  <Config Name="API key" Target="BATCHROOM_API_KEY" Default="" Mode="" Description="Set to require an API key for the UI/API (recommended when exposed beyond localhost)" Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Workers" Target="BATCHROOM_WORKERS" Default="2" Mode="" Description="Parallel image workers (raise on strong CPUs)" Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+</Container>

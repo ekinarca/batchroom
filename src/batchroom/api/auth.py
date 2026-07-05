@@ -1,0 +1,249 @@
+"""Authentication & authorization.
+
+Two modes, switched by license + data:
+
+* **Single-user (community / no users created):** exactly the v0.1 model —
+  optional ``BATCHROOM_API_KEY`` guards everything; without it the server
+  trusts its network (self-hosted default).
+* **Multi-user (Pro license + ≥1 user):** cookie sessions and per-user API
+  keys with admin/member roles. The env API key keeps working as an
+  admin-equivalent so existing automations never break. If the license
+  lapses, logins KEEP WORKING (never brick a server) — only user
+  *management* pauses.
+"""
+
+from __future__ import annotations
+
+import time
+from collections import deque
+from dataclasses import dataclass, field
+
+from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel, Field
+
+from ..pro import entitlements, load_license
+from ..pro.users import (
+    authenticate,
+    count_users,
+    create_session,
+    destroy_session,
+    resolve_api_key,
+    resolve_session,
+)
+
+SESSION_COOKIE = "br_session"
+
+
+@dataclass
+class Actor:
+    kind: str  # open | env | user
+    user: dict | None = None
+
+    @property
+    def is_admin(self) -> bool:
+        if self.kind in ("open", "env"):
+            return True
+        return bool(self.user and self.user.get("role") == "admin")
+
+    @property
+    def user_id(self) -> int | None:
+        return self.user.get("id") if self.user else None
+
+    @property
+    def label(self) -> str:
+        if self.user:
+            return self.user.get("email", "user")
+        return self.kind
+
+
+# ---------------------------------------------------------------------------
+# license/feature helpers (cached on app.state)
+# ---------------------------------------------------------------------------
+
+
+def refresh_license(app) -> None:
+    app.state.license_info = load_license(app.state.settings)
+    app.state.__dict__.pop("_user_count_cache", None)
+
+
+def license_info(app):
+    return app.state.license_info
+
+
+def features(app) -> set[str]:
+    return entitlements(app.state.license_info)
+
+
+def _user_count(app) -> int:
+    cache = app.state.__dict__.get("_user_count_cache")
+    now = time.monotonic()
+    if cache and now - cache[1] < 3.0:
+        return cache[0]
+    count = count_users(app.state.db)
+    app.state.__dict__["_user_count_cache"] = (count, now)
+    return count
+
+
+def invalidate_user_cache(app) -> None:
+    app.state.__dict__.pop("_user_count_cache", None)
+
+
+def multiuser_active(app) -> bool:
+    """Users exist AND the license grants multi_user (valid, incl. grace).
+
+    A lapsed license keeps sessions working via ``users_exist`` fallback in
+    get_actor — this flag governs *management* features.
+    """
+    return "multi_user" in features(app) and _user_count(app) > 0
+
+
+def users_exist(app) -> bool:
+    return _user_count(app) > 0
+
+
+# ---------------------------------------------------------------------------
+# actor resolution (global dependency for the protected API)
+# ---------------------------------------------------------------------------
+
+
+def _supplied_key(request: Request) -> str | None:
+    key = request.headers.get("x-api-key")
+    auth = request.headers.get("authorization", "")
+    if not key and auth.lower().startswith("bearer "):
+        key = auth[7:].strip()
+    return key or request.query_params.get("api_key")
+
+
+def get_actor(request: Request) -> Actor:
+    app = request.app
+    settings = app.state.settings
+    supplied = _supplied_key(request)
+
+    # env key is always an admin passe-partout (automation continuity)
+    if settings.api_key and supplied == settings.api_key:
+        actor = Actor(kind="env")
+        request.state.actor = actor
+        return actor
+
+    if users_exist(app):
+        user = resolve_session(app.state.db, request.cookies.get(SESSION_COOKIE))
+        if user is None:
+            user = resolve_api_key(app.state.db, supplied)
+        if user is not None:
+            actor = Actor(kind="user", user=user)
+            request.state.actor = actor
+            return actor
+        raise HTTPException(
+            status_code=401,
+            detail={"detail": "login required", "login_required": True},
+        )
+
+    # single-user mode
+    if settings.api_key:
+        raise HTTPException(status_code=401, detail="invalid or missing API key")
+    actor = Actor(kind="open")
+    request.state.actor = actor
+    return actor
+
+
+def require_admin(request: Request) -> Actor:
+    actor = getattr(request.state, "actor", None) or get_actor(request)
+    if not actor.is_admin:
+        raise HTTPException(status_code=403, detail="admin role required")
+    return actor
+
+
+def actor_of(request: Request) -> Actor:
+    return getattr(request.state, "actor", None) or Actor(kind="open")
+
+
+# ---------------------------------------------------------------------------
+# login rate limiting (in-memory, per source)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _RateLimiter:
+    max_attempts: int = 5
+    window_seconds: float = 60.0
+    buckets: dict = field(default_factory=dict)
+
+    def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        bucket = self.buckets.setdefault(key, deque())
+        while bucket and now - bucket[0] > self.window_seconds:
+            bucket.popleft()
+        if len(bucket) >= self.max_attempts:
+            return False
+        bucket.append(now)
+        if len(self.buckets) > 1000:  # bound memory
+            self.buckets.clear()
+        return True
+
+
+_login_limiter = _RateLimiter()
+
+
+# ---------------------------------------------------------------------------
+# open routes: login / logout / me (the UI boots against these)
+# ---------------------------------------------------------------------------
+
+router = APIRouter()
+
+
+class LoginBody(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+@router.post("/auth/login")
+def login(request: Request, response: Response, body: LoginBody) -> dict:
+    app = request.app
+    if not users_exist(app):
+        raise HTTPException(status_code=400, detail="multi-user mode is not set up")
+    client = request.client.host if request.client else "?"
+    if not _login_limiter.allow(f"{client}:{body.email.lower()}"):
+        raise HTTPException(status_code=429, detail="too many attempts — wait a minute")
+    user = authenticate(app.state.db, body.email, body.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="invalid email or password")
+    token = create_session(app.state.db, user["id"])
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=30 * 24 * 3600,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return {"user": user, "authenticated": True}
+
+
+@router.post("/auth/logout")
+def logout(request: Request, response: Response) -> dict:
+    destroy_session(request.app.state.db, request.cookies.get(SESSION_COOKIE))
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return {"authenticated": False}
+
+
+@router.get("/auth/me")
+def me(request: Request) -> dict:
+    """Auth state probe — open on purpose so the UI knows what to render."""
+    app = request.app
+    info = license_info(app)
+    state = {
+        "multiuser": users_exist(app),
+        "license": info.to_public_dict(),
+        "auth_required": bool(app.state.settings.api_key) or users_exist(app),
+    }
+    try:
+        actor = get_actor(request)
+    except HTTPException:
+        return {**state, "authenticated": False, "user": None, "role": None}
+    return {
+        **state,
+        "authenticated": True,
+        "user": actor.user,
+        "role": "admin" if actor.is_admin else "member",
+        "kind": actor.kind,
+    }

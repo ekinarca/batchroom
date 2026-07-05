@@ -1,0 +1,30 @@
+# One product photo in, every marketplace size out.
+# Sizes follow published requirements (verified 2026-07):
+#   Amazon   2000x2000 (min 1000px, pure white, product fills ~85% -> 5% padding)
+#   Etsy     2000x1500 (4:3 listing display, 2000px+ shortest side recommended)
+#   Shopify  2048x2048 (square recommendation)
+#   Trendyol 1200x1800 (2:3 portrait requirement)
+#   Instagram feed 1080x1080
+name: marketplace-pack
+description: Amazon / Etsy / Shopify / Trendyol / Instagram size set from one photo
+version: 1
+input:
+  formats: [jpg, png, webp, heic, avif, tiff, bmp]
+steps:
+  - op: remove-background
+    model: auto
+    alpha_matting: true
+  - op: trim
+    threshold: 8
+  - op: preset-pack
+    presets:
+      - { name: amazon-main,    size: 2000x2000, format: jpg, quality: 92, fit: pad, background: "#FFFFFF", padding: 5% }
+      - { name: etsy-listing,   size: 2000x1500, format: jpg, quality: 90, fit: pad, background: "#FFFFFF", padding: 6% }
+      - { name: shopify-square, size: 2048x2048, format: jpg, quality: 90, fit: pad, background: "#FFFFFF", padding: 8% }
+      - { name: trendyol,       size: 1200x1800, format: jpg, quality: 90, fit: pad, background: "#FFFFFF", padding: 8% }
+      - { name: instagram-feed, size: 1080x1080, format: jpg, quality: 88, fit: pad, background: "#FFFFFF", padding: 8% }
+  - op: rename
+    pattern: "{original}-{preset}"
+output:
+  structure: per-preset-folder
+  manifest: true
