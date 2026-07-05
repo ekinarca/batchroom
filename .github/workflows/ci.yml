@@ -38,6 +38,7 @@ jobs:
         with:
           context: .
           push: false
+          load: true          # make the image available to `docker run` below
           tags: batchroom:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
