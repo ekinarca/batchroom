@@ -48,14 +48,25 @@ Offline keys can't auto-renew. Calendar reminder ~2 weeks before expiry
 → send payment link → issue a fresh key on payment. The 3-day grace in
 the verifier absorbs weekend renewals.
 
-## Storefront options (pick one when volume justifies it)
+## Storefront options — Turkey reality (verified 2026-07-05)
 
-| Option | Fee | Notes |
-|---|---|---|
-| **Polar.sh** | ~4% + 40¢ | OSS-native, license-key delivery hooks, EU-friendly. Recommended first. |
-| Lemon Squeezy | 5% + 50¢ | Merchant of record (handles EU VAT), webhook → auto-issue possible |
-| Paddle | ~5% | MoR, more enterprise-ish |
-| Stripe Payment Links | 1.5-2.9% | cheapest, but YOU handle VAT/invoices |
+The operator is a Turkey resident. Hard constraints: **Stripe has no
+merchant support for Turkey** (not in its 46 supported countries) and
+**PayPal does not operate in Turkey** — so anything PayPal-payout-only
+is out, and direct Stripe requires a foreign entity.
+
+| Option | Fee | Turkey status | Notes |
+|---|---|---|---|
+| **Polar.sh** ✅ recommended | ~4% + 40¢ | **Türkiye explicitly in their payout country list** (Stripe Connect Express payouts) | OSS-native MoR: they are the seller, handle VAT/sales tax, license-key webhooks; you just receive payouts |
+| **Paddle** ✅ fallback | ~5% + 50¢ | Sellers worldwide; payout via **wire or Payoneer** (a $15 SWIFT fee can apply) | Established MoR; stricter onboarding review (wants a live site) |
+| Lemon Squeezy | 5% + 50¢ | Unverified for TR bank payouts; PayPal payouts unusable in TR | Check their bank-payout country list before relying on it |
+| Stripe direct | 1.5-2.9% | ❌ Not without a **US LLC** (Atlas ~$500 + yearly US filings) | Revisit only at serious MRR; you'd also handle VAT yourself |
+
+TR side: to invoice payouts legally you'll want a şahıs şirketi + mali
+müşavir; ask about the software/service-export tax advantages
+(hizmet ihracatı KDV istisnası, kazanç indirimi — accountant confirms
+eligibility). MoR platforms bill the end customer, so you invoice only
+the platform's payout — much simpler bookkeeping.
 
 Automation path when manual gets old: a tiny webhook receiver (can run
 on the same box) that calls `license_admin.py issue` on
