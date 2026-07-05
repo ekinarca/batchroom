@@ -34,9 +34,11 @@ Design choices people here might care about:
   license before download.
 - UI ships in 10 languages incl. full RTL Arabic.
 
-The core is MIT and stays complete (no feature ransom). If it grows,
-the plan is a paid layer for org stuff (SSO/multi-user/audit) — the
-Stirling-PDF model, not the bait-and-switch model.
+The core is MIT and stays complete (no feature ransom). There's an
+optional paid Pro layer for org stuff (multi-user with roles, priority
+queue, email notifications) with offline Ed25519 license keys — no
+phone-home, and an expired key never locks your data. The Stirling-PDF
+model, not the bait-and-switch model.
 
 Repo: https://github.com/ekinarca/batchroom
 Quick start: `docker run -p 5151:5151 -v batchroom-data:/data ghcr.io/ekinarca/batchroom`

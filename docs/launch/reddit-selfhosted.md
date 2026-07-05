@@ -31,8 +31,13 @@ on CPU via ONNX — no GPU needed, downloads are SHA-256 pinned.
   weights (licenses shown in the UI — no BRIA-style NC surprises).
 
 **Honest limits:** CPU 4× upscaling is slow (~10 s per 512² tile-set on
-a fast CPU — queue it, don't watch it). No video, on purpose. Single
-user for now (API key auth).
+a fast CPU — queue it, don't watch it). No video, on purpose. The free
+core is single-admin (API key auth).
+
+**Monetization, upfront:** core is MIT and complete on its own. There's
+an optional paid Pro layer (multi-user with roles, priority queue, email
+notifications) — offline license key, no phone-home, expired key never
+locks data. That's what keeps this maintained; no dark patterns.
 
 Repo + compose: https://github.com/ekinarca/batchroom
 
