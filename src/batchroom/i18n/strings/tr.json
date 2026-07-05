@@ -174,5 +174,12 @@
   "process.priority_label": "Kuyruk önceliği",
   "process.priority.normal": "Normal",
   "process.priority.high": "Yüksek",
-  "process.priority.urgent": "Acil"
+  "process.priority.urgent": "Acil",
+  "tour.title": "Batchroom'a hoş geldin",
+  "tour.intro": "Her şey burada, bu sunucuda çalışır — hiçbir görsel buluta yüklenmez.",
+  "tour.step1": "İşle sayfasına görselleri sürükle ve bir reçete seç: arka plan silme + boyutlandırma + dışa aktarma paketi gibi hazır bir üretim hattı.",
+  "tour.step2": "İlerlemeyi Kuyruk sayfasından canlı izle — her görsel hangi adımda olduğunu gösterir, istediğin an iptal edebilirsin.",
+  "tour.step3": "Biten bir işi aç, önce/sonrayı kaydırıcıyla karşılaştır ve sonuçları ZIP olarak indir.",
+  "tour.cta": "Anladım, başlayalım",
+  "tour.reopen": "Nasıl çalışır?"
 }

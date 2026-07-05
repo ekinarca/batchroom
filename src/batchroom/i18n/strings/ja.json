@@ -174,5 +174,12 @@
   "process.priority_label": "キューの優先度",
   "process.priority.normal": "通常",
   "process.priority.high": "高",
-  "process.priority.urgent": "緊急"
+  "process.priority.urgent": "緊急",
+  "tour.title": "Batchroom へようこそ",
+  "tour.intro": "すべてこのサーバー上で実行されます — 画像がクラウドに送信されることはありません。",
+  "tour.step1": "処理ページに画像をドロップしてレシピを選びます。レシピは背景除去＋リサイズ＋書き出しパックなどの既製パイプラインです。",
+  "tour.step2": "進行状況はキューでリアルタイムに確認できます。各画像が現在のステップを表示し、いつでもキャンセルできます。",
+  "tour.step3": "完了したジョブを開くと、スライダーで処理前後を比較し、結果を ZIP でダウンロードできます。",
+  "tour.cta": "わかりました、始める",
+  "tour.reopen": "使い方"
 }

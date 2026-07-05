@@ -174,5 +174,12 @@
   "process.priority_label": "Priorité de file",
   "process.priority.normal": "Normale",
   "process.priority.high": "Haute",
-  "process.priority.urgent": "Urgente"
+  "process.priority.urgent": "Urgente",
+  "tour.title": "Bienvenue dans Batchroom",
+  "tour.intro": "Tout s'exécute ici, sur ce serveur — aucune image n'est envoyée vers un cloud.",
+  "tour.step1": "Déposez vos images sur la page Traiter et choisissez une recette : un pipeline prêt à l'emploi (détourage + redimensionnement + pack d'export).",
+  "tour.step2": "Suivez la progression en direct dans la File d'attente — chaque image affiche son étape en cours, annulable à tout moment.",
+  "tour.step3": "Ouvrez une tâche terminée pour comparer avant/après avec le curseur et télécharger les résultats en ZIP.",
+  "tour.cta": "Compris, c'est parti",
+  "tour.reopen": "Comment ça marche"
 }

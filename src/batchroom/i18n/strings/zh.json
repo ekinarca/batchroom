@@ -174,5 +174,12 @@
   "process.priority_label": "队列优先级",
   "process.priority.normal": "普通",
   "process.priority.high": "高",
-  "process.priority.urgent": "紧急"
+  "process.priority.urgent": "紧急",
+  "tour.title": "欢迎使用 Batchroom",
+  "tour.intro": "一切都在这台服务器上运行 — 任何图片都不会上传到云端。",
+  "tour.step1": "把图片拖到「处理」页面并选择一个配方：现成的处理流水线，例如去除背景 + 调整尺寸 + 导出套装。",
+  "tour.step2": "在「队列」页面实时查看进度 — 每张图片都会显示当前步骤，可随时取消。",
+  "tour.step3": "打开已完成的任务，用滑块对比处理前后，并将结果打包下载为 ZIP。",
+  "tour.cta": "明白了，开始使用",
+  "tour.reopen": "使用说明"
 }

@@ -174,5 +174,12 @@
   "process.priority_label": "Queue priority",
   "process.priority.normal": "Normal",
   "process.priority.high": "High",
-  "process.priority.urgent": "Urgent"
+  "process.priority.urgent": "Urgent",
+  "tour.title": "Welcome to Batchroom",
+  "tour.intro": "Everything runs here, on this server — nothing is uploaded to a cloud.",
+  "tour.step1": "Drop images on the Process page and pick a recipe: a ready-made pipeline such as background removal + resize + export pack.",
+  "tour.step2": "Follow progress live in the Queue — every image reports its current step, and you can cancel anytime.",
+  "tour.step3": "Open a finished job to compare before/after with the slider and download the results as a ZIP.",
+  "tour.cta": "Got it, let's start",
+  "tour.reopen": "How it works"
 }

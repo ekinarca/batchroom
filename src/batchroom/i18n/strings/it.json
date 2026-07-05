@@ -174,5 +174,12 @@
   "process.priority_label": "Priorità della coda",
   "process.priority.normal": "Normale",
   "process.priority.high": "Alta",
-  "process.priority.urgent": "Urgente"
+  "process.priority.urgent": "Urgente",
+  "tour.title": "Benvenuto in Batchroom",
+  "tour.intro": "Tutto gira qui, su questo server — nessuna immagine viene caricata su un cloud.",
+  "tour.step1": "Trascina le immagini nella pagina Elabora e scegli una ricetta: una pipeline pronta all'uso (rimozione sfondo + ridimensionamento + pacchetto di export).",
+  "tour.step2": "Segui l'avanzamento in tempo reale nella Coda — ogni immagine mostra il passaggio in corso e puoi annullare in qualsiasi momento.",
+  "tour.step3": "Apri un lavoro completato per confrontare prima/dopo con il cursore e scaricare i risultati in ZIP.",
+  "tour.cta": "Capito, iniziamo",
+  "tour.reopen": "Come funziona"
 }

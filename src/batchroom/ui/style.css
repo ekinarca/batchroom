@@ -234,18 +234,31 @@ table.items tr:last-child td { border-bottom: 0; }
 }
 .err-text { color: var(--sig-ink); font-size: 12px; }
 
-/* before/after compare */
+/* before/after compare
+   Both layers letterbox into one box (object-fit: contain) so recipes that
+   change the aspect ratio (1:1 packshots, capsule crops…) still line up. */
 .compare {
   position: relative; overflow: hidden; border-radius: var(--radius-s);
   border: 1px solid var(--line); max-width: 460px;
+  aspect-ratio: var(--compare-ar, 4 / 3);
+  max-height: min(60vh, 540px);
+  margin-inline: auto;
   background:
     conic-gradient(var(--bg-raise-2) 90deg, var(--bg-raise) 90deg 180deg,
     var(--bg-raise-2) 180deg 270deg, var(--bg-raise) 270deg) 0 0/18px 18px;
   touch-action: none;
 }
-.compare img { width: 100%; display: block; pointer-events: none; }
+.compare img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain; display: block; pointer-events: none;
+}
 .compare .after-wrap {
   position: absolute; inset: 0; overflow: hidden;
+  /* same checkerboard as the frame: the revealed side reads as pure "after",
+     the original never bleeds through the letterbox bands */
+  background:
+    conic-gradient(var(--bg-raise-2) 90deg, var(--bg-raise) 90deg 180deg,
+    var(--bg-raise-2) 180deg 270deg, var(--bg-raise) 270deg) 0 0/18px 18px;
 }
 .compare .divider {
   position: absolute; top: 0; bottom: 0; width: 2px; background: var(--sig);
@@ -263,6 +276,18 @@ table.items tr:last-child td { border-bottom: 0; }
 }
 .compare .tag.before { inset-inline-start: 8px; }
 .compare .tag.after { inset-inline-end: 8px; }
+
+/* ---------- onboarding tour ---------- */
+.modal.tour { max-width: 440px; }
+.modal.tour h2 { margin: 0 0 4px; font-size: 17px; }
+.tour-step { display: flex; gap: 12px; align-items: flex-start; margin-top: 13px; }
+.tour-step p { margin: 2px 0 0; font-size: 13.5px; color: var(--ink-dim); line-height: 1.55; }
+.tour-num {
+  flex: 0 0 auto; width: 24px; height: 24px; border-radius: 99px;
+  display: grid; place-items: center; font-family: var(--mono); font-size: 12px;
+  background: var(--bg-raise-2); border: 1px solid var(--line); color: var(--ink);
+}
+#tour-link { width: 100%; margin-bottom: 8px; }
 
 /* ---------- models ---------- */
 .modelcard h3 { margin: 0 0 2px; font-size: 14.5px; }

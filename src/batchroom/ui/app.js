@@ -123,6 +123,31 @@ function confirmModal(message) {
   });
 }
 
+/* ---------- onboarding tour ---------- */
+const TOUR_KEY = "br_tour_v1";
+function showTour() {
+  const root = $("#modal-root");
+  const close = () => root.replaceChildren();
+  const step = (n, key) => h("div", { class: "tour-step" },
+    h("span", { class: "tour-num" }, String(n)),
+    h("p", {}, t(key)));
+  root.replaceChildren(
+    h("div", { class: "modal tour", role: "dialog", "aria-modal": "true" },
+      h("h2", {}, t("tour.title")),
+      h("p", { class: "sub" }, t("tour.intro")),
+      step(1, "tour.step1"), step(2, "tour.step2"), step(3, "tour.step3"),
+      h("div", { class: "row", style: "justify-content:flex-end;margin-top:16px" },
+        h("button", { class: "btn sig", onclick: close }, t("tour.cta"))),
+    ),
+  );
+  root.addEventListener("click", (e) => { if (e.target === root) close(); }, { once: true });
+}
+function maybeShowTour() {
+  if (localStorage.getItem(TOUR_KEY)) return;
+  localStorage.setItem(TOUR_KEY, "1"); // first sighting counts; reopen lives in the sidebar
+  showTour();
+}
+
 /* ================= router ================= */
 const VIEWS = ["process", "queue", "recipes", "models", "users", "watch", "system"];
 function viewVisible(view) {
@@ -167,6 +192,7 @@ function renderNav() {
   const sel = $("#lang-select");
   sel.replaceChildren(...S.languages.map((l) =>
     h("option", { value: l.code, selected: l.code === S.lang }, l.name)));
+  $("#tour-link").textContent = t("tour.reopen");
   const foot = $("#user-box");
   if (foot) {
     foot.replaceChildren();
@@ -438,7 +464,16 @@ async function openJobDrawer(jobId) {
 function openCompare(job, item) {
   const root = $("#modal-root");
   const closeAll = () => root.replaceChildren();
-  const before = h("img", { src: fileUrl(`/api/jobs/${job.id}/thumb/${item.idx}/in`), alt: t("queue.before") });
+  // the original drives the frame's aspect; both layers letterbox inside it
+  const before = h("img", {
+    src: fileUrl(`/api/jobs/${job.id}/thumb/${item.idx}/in`), alt: t("queue.before"),
+    onload: (e) => {
+      const im = e.currentTarget;
+      if (im.naturalWidth && im.naturalHeight) {
+        box.style.setProperty("--compare-ar", `${im.naturalWidth} / ${im.naturalHeight}`);
+      }
+    },
+  });
   const after = h("img", { src: fileUrl(`/api/jobs/${job.id}/thumb/${item.idx}/out`), alt: t("queue.after") });
   const afterWrap = h("div", { class: "after-wrap" }, after);
   const divider = h("div", { class: "divider" });
@@ -963,6 +998,7 @@ async function boot() {
     await loadLang(e.target.value);
     render();
   });
+  $("#tour-link").addEventListener("click", showTour);
   window.addEventListener("hashchange", route);
 
   try {
@@ -1000,6 +1036,7 @@ async function start() {
   connectEvents();
   setInterval(() => { refreshSystem(); if (S.view === "system") render(); }, 30000);
   route();
+  maybeShowTour();
 }
 
 boot();

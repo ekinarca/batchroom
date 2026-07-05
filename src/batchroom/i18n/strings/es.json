@@ -174,5 +174,12 @@
   "process.priority_label": "Prioridad de cola",
   "process.priority.normal": "Normal",
   "process.priority.high": "Alta",
-  "process.priority.urgent": "Urgente"
+  "process.priority.urgent": "Urgente",
+  "tour.title": "Bienvenido a Batchroom",
+  "tour.intro": "Todo se ejecuta aquí, en este servidor — ninguna imagen se sube a la nube.",
+  "tour.step1": "Arrastra imágenes a la página Procesar y elige una receta: un pipeline listo para usar (quitar fondo + redimensionar + pack de exportación).",
+  "tour.step2": "Sigue el progreso en vivo en la Cola — cada imagen muestra su paso actual y puedes cancelar cuando quieras.",
+  "tour.step3": "Abre un trabajo terminado para comparar antes/después con el deslizador y descargar los resultados en ZIP.",
+  "tour.cta": "Entendido, empecemos",
+  "tour.reopen": "Cómo funciona"
 }

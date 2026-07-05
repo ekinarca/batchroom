@@ -2,7 +2,21 @@
 
 All notable changes to Batchroom. Format: [Keep a Changelog](https://keepachangelog.com), versioning: [SemVer](https://semver.org).
 
-## [0.1.0] — unreleased (launch candidate)
+## [Unreleased]
+
+### Added
+
+- First-run onboarding tour: a three-step "how it works" dialog on first
+  visit, reopenable anytime from the sidebar — localized in all 10
+  languages.
+
+### Fixed
+
+- Before/after compare no longer misaligns when a recipe changes the
+  aspect ratio (1:1 packshots, capsule crops): both sides now letterbox
+  into one frame, and the revealed side always reads as pure "after".
+
+## [0.1.0] — 2026-07-05
 
 First public version. Everything below is new.
 

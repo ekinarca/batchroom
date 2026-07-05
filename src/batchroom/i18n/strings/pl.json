@@ -174,5 +174,12 @@
   "process.priority_label": "Priorytet kolejki",
   "process.priority.normal": "Normalny",
   "process.priority.high": "Wysoki",
-  "process.priority.urgent": "Pilny"
+  "process.priority.urgent": "Pilny",
+  "tour.title": "Witaj w Batchroom",
+  "tour.intro": "Wszystko działa tutaj, na tym serwerze — żadne obrazy nie są wysyłane do chmury.",
+  "tour.step1": "Przeciągnij obrazy na stronę Przetwarzaj i wybierz recepturę: gotowy potok, np. usuwanie tła + zmiana rozmiaru + pakiet eksportu.",
+  "tour.step2": "Śledź postęp na żywo w Kolejce — każdy obraz pokazuje bieżący krok i możesz anulować w dowolnej chwili.",
+  "tour.step3": "Otwórz ukończone zadanie, porównaj przed/po suwakiem i pobierz wyniki jako ZIP.",
+  "tour.cta": "Rozumiem, zaczynajmy",
+  "tour.reopen": "Jak to działa"
 }
