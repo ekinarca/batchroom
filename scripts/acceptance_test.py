@@ -369,6 +369,30 @@ def main() -> int:  # noqa: PLR0915
         s.cleanup()
 
     # =====================================================================
+    print("\n[1b/8] Cold start: fresh server, zero models, first job self-serves")
+    s = Server("cold", workers=1)
+    (s.data / "models").unlink()  # remove the symlink -> truly empty models dir
+    (s.data / "models").mkdir()
+    s.start()
+    c = httpx.Client(timeout=300)
+    try:
+        recipe = ("name: cold-bg\nsteps:\n  - op: remove-background\n    model: u2netp\n"
+                  "  - op: convert\n    format: png\noutput: { structure: flat }\n")
+        c.post(f"{s.base}/api/recipes", json={"text": recipe}).raise_for_status()
+        job = submit_files(c, s.base, "cold-bg", [("mug.jpg", photo_bytes())])
+        job = wait_done(c, s.base, job["id"], timeout=300)
+        ok = job["done"] == 1 and (s.data / "models" / "u2netp.onnx").is_file()
+        check("cold start auto-downloads model & completes (README promise)", ok,
+              "" if ok else str(job["items"][0].get("error"))[:80])
+        v = c.get(f"{s.base}/api/models").json()["models"]
+        got = next(m for m in v if m["id"] == "u2netp")
+        check("auto-downloaded model checksum-pinned & listed", got["downloaded"]
+              and got["pinned"])
+    finally:
+        c.close()
+        s.cleanup()
+
+    # =====================================================================
     print("\n[2/8] Kill -9 crash resume")
     s = Server("resume", workers=2).start()
     c = httpx.Client(timeout=60)

@@ -204,6 +204,28 @@ class ModelManager:
             return True
         return False
 
+    def ensure_session(self, model_id: str, *, progress_text=None):
+        """Download-if-missing, then return the shared session.
+
+        This is what ops use, fulfilling the README promise that models
+        download automatically on first use. ``progress_text`` receives
+        human-readable download progress (e.g. for the job queue UI).
+        """
+        if not self.is_available(model_id):
+            last = {"pct": -10}
+
+            def cb(done: int, total: int | None) -> None:
+                if progress_text and total:
+                    pct = done * 100 // total
+                    if pct - last["pct"] >= 5:
+                        last["pct"] = pct
+                        progress_text(f"downloading model {model_id}… {pct}%")
+
+            if progress_text:
+                progress_text(f"downloading model {model_id} (first use)")
+            self.ensure(model_id, progress=cb)
+        return self.session(model_id)
+
     # ---- ONNX sessions ----------------------------------------------------
     def session(self, model_id: str):
         """Shared onnxruntime session (InferenceSession.run is thread-safe)."""

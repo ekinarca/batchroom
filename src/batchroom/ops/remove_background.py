@@ -103,7 +103,8 @@ class RemoveBackgroundOp(Op):
             raise OpError("no model manager configured", op=self.name)
         spec = _resolve_spec(params.model)
         ctx.progress(f"remove-background ({spec.id})")
-        session = ctx.models.session(spec.id)
+        # First use downloads the weights (checksum-verified) — README promise.
+        session = ctx.models.ensure_session(spec.id, progress_text=ctx.progress)
         ctx.cancel_check()
 
         img = state.image

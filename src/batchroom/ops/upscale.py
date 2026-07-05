@@ -105,13 +105,7 @@ class UpscaleOp(Op):
 
         model_id = params.model
         if model_id == "auto":
-            if ctx.models is not None and ctx.models.is_available("realesrgan-x4"):
-                model_id = "realesrgan-x4"
-            else:
-                raise ModelError(
-                    "no upscale model downloaded",
-                    hint="run: batchroom models pull realesrgan-x4 — or set 'model: lanczos'",
-                )
+            model_id = "realesrgan-x4"
 
         if model_id == "lanczos":
             out = imaging.resize_rgba(img.pixels, target_w, target_h)
@@ -123,7 +117,8 @@ class UpscaleOp(Op):
         spec = get_spec(model_id)
         if spec is None:  # pragma: no cover - validator prevents
             raise ModelError(f"unknown model '{model_id}'")
-        session = ctx.models.session(spec.id)
+        # First use downloads the weights (checksum-verified) — README promise.
+        session = ctx.models.ensure_session(spec.id, progress_text=ctx.progress)
         ctx.progress(f"upscale ({spec.id})")
 
         rgb01 = img.pixels[:, :, :3].astype(np.float32) / 255.0

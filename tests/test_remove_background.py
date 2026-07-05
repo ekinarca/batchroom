@@ -48,11 +48,40 @@ class TestRemoveBackground:
         with pytest.raises(Exception, match="unknown background-removal model"):
             op.validate_params({"model": "not-a-model"})
 
-    def test_missing_weight_gives_hint(self, ctx, stub_model, settings):
+    def test_missing_weight_autodownloads(self, ctx, stub_model, settings, monkeypatch):
+        """Ops must try to fetch a missing model (README: first use downloads)."""
         (settings.models_dir / f"{stub_model}.onnx").unlink()
+        pulled: list[str] = []
+
+        def fake_ensure(self, model_id, *, progress=None, allow_unpinned=False):
+            pulled.append(model_id)
+            path = self.path_for(model_id)
+            from .golden.gen import build_stub_onnx
+
+            path.write_bytes(build_stub_onnx())
+            return path
+
+        from batchroom.models.manager import ModelManager
+
+        monkeypatch.setattr(ModelManager, "ensure", fake_ensure)
         op = get_op("remove-background")
         params = op.validate_params({"model": stub_model})
-        with pytest.raises(ModelError, match="not downloaded"):
+        state = op.apply(ItemState(image=bright_disc_image(), original_stem="x"), params, ctx)
+        assert pulled == [stub_model]
+        assert state.image.pixels[4, 4, 3] < 40  # and it actually worked
+
+    def test_missing_weight_offline_gives_clear_error(self, ctx, stub_model, settings,
+                                                      monkeypatch):
+        (settings.models_dir / f"{stub_model}.onnx").unlink()
+        from batchroom.models.manager import ModelManager
+
+        def fail_ensure(self, model_id, *, progress=None, allow_unpinned=False):
+            raise ModelError("download failed (offline)", hint="check network access")
+
+        monkeypatch.setattr(ModelManager, "ensure", fail_ensure)
+        op = get_op("remove-background")
+        params = op.validate_params({"model": stub_model})
+        with pytest.raises(ModelError, match="download failed"):
             op.apply(ItemState(image=bright_disc_image(), original_stem="x"), params, ctx)
 
 
@@ -63,10 +92,18 @@ class TestUpscale:
         state = op.apply(ItemState(image=gradient_image(50, 40), original_stem="x"), params, ctx)
         assert (state.image.width, state.image.height) == (100, 80)
 
-    def test_auto_without_model_hints_pull(self, ctx):
+    def test_auto_attempts_download_when_missing(self, ctx, monkeypatch):
+        """auto -> realesrgan-x4 is fetched on first use (hermetic: stubbed)."""
+        from batchroom.models.manager import ModelManager
+
+        def fail_ensure(self, model_id, *, progress=None, allow_unpinned=False):
+            assert model_id == "realesrgan-x4"
+            raise ModelError("download failed (offline)", hint="check network access")
+
+        monkeypatch.setattr(ModelManager, "ensure", fail_ensure)
         op = get_op("upscale")
         params = op.validate_params({"scale": 4})
-        with pytest.raises(ModelError, match="no upscale model"):
+        with pytest.raises(ModelError, match="download failed"):
             op.apply(ItemState(image=gradient_image(10, 10), original_stem="x"), params, ctx)
 
     def test_scale_validation(self):
