@@ -57,7 +57,7 @@ is out, and direct Stripe requires a foreign entity.
 
 | Option | Fee | Turkey status | Notes |
 |---|---|---|---|
-| **Polar.sh** ✅ recommended | ~4% + 40¢ | **Türkiye explicitly in their payout country list** (Stripe Connect Express payouts) | OSS-native MoR: they are the seller, handle VAT/sales tax, license-key webhooks; you just receive payouts |
+| **Polar.sh** ✅ recommended | 5% + 50¢ (free Starter plan, **zero fixed cost**; $20/mo Pro plan drops it to 3.8% + 40¢ — worth it above ~€1.5k MRR) | **Türkiye explicitly in their payout country list** (Stripe Connect Express payouts) | OSS-native MoR: they are the seller, handle VAT/sales tax, license-key webhooks; you just receive payouts. Payout side: Stripe fees only ($2 per active-payout month + 0.25% + FX) |
 | **Paddle** ✅ fallback | ~5% + 50¢ | Sellers worldwide; payout via **wire or Payoneer** (a $15 SWIFT fee can apply) | Established MoR; stricter onboarding review (wants a live site) |
 | Lemon Squeezy | 5% + 50¢ | Unverified for TR bank payouts; PayPal payouts unusable in TR | Check their bank-payout country list before relying on it |
 | Stripe direct | 1.5-2.9% | ❌ Not without a **US LLC** (Atlas ~$500 + yearly US filings) | Revisit only at serious MRR; you'd also handle VAT yourself |
