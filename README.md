@@ -16,7 +16,7 @@ Drop 500 product photos into a folder. Batchroom removes the backgrounds, sets t
 
 It is to Photoroom/remove.bg what Stirling-PDF is to Acrobat: the same day-to-day work, self-hosted and unmetered.
 
-![Batchroom demo: drop images, pick a recipe, watch the queue, compare before/after](docs/assets/demo.gif)
+![Batchroom demo: drop images, pick a recipe, watch the queue, compare before/after](https://raw.githubusercontent.com/ekinarca/batchroom/main/docs/assets/demo.gif)
 
 ## Why people switch
 
@@ -101,7 +101,7 @@ output: { structure: per-preset-folder, manifest: true }
 - `marketplace-pack` — one photo → Amazon 2000², Etsy 2000×1500, Shopify 2048², Trendyol 1200×1800, Instagram 1080²
 - `steam-capsule-pack` — one key art → every Steam capsule (main 1232×706, header 920×430, small 462×174, vertical 748×896, library 600×900, hero 3840×1240)
 
-Ops available today: `remove-background`, `upscale` (2×/4×, Real-ESRGAN or Lanczos), `resize` (contain/pad/cover/stretch), `trim`, `composite`, `convert` (JPG/PNG/WebP/AVIF/HEIC/TIFF), `preset-pack`, `rename`, `strip-metadata` (EXIF privacy). Full parameter reference: [docs/RECIPES.md](docs/RECIPES.md).
+Ops available today: `remove-background`, `upscale` (2×/4×, Real-ESRGAN or Lanczos), `resize` (contain/pad/cover/stretch), `trim`, `composite`, `convert` (JPG/PNG/WebP/AVIF/HEIC/TIFF), `preset-pack`, `rename`, `strip-metadata` (EXIF privacy). Full parameter reference: [docs/RECIPES.md](https://github.com/ekinarca/batchroom/blob/main/docs/RECIPES.md).
 
 Write your own in the built-in editor (with validation) or drop YAML files into `/data/recipes` — user recipes override built-ins by name.
 
@@ -155,13 +155,13 @@ Measured on an Apple M-series CPU (32 cores, CPU inference only — no GPU requi
 | Resize + convert | libjpeg/libwebp | ~0.01 s/image |
 | Upscale 4× (512²→2048²) | `realesrgan-x4` | ~10 s/image |
 
-Model rows are pure inference time. End-to-end (decode → inference → PNG encode, 4 parallel workers) the same machine sustains **~7,800 images/hour** of 1080p background removal — measured by [`scripts/acceptance_test.py`](scripts/acceptance_test.py), which re-verifies every claim in this README against a live server.
+Model rows are pure inference time. End-to-end (decode → inference → PNG encode, 4 parallel workers) the same machine sustains **~7,800 images/hour** of 1080p background removal — measured by [`scripts/acceptance_test.py`](https://github.com/ekinarca/batchroom/blob/main/scripts/acceptance_test.py), which re-verifies every claim in this README against a live server.
 
 Upscaling on CPU is slow — that's physics, not a bug. The queue is built for it: submit, walk away, get a webhook.
 
 ## AI models & licenses
 
-Only **permissively-licensed** models ship in the catalog — verified per weight file, pinned by SHA-256, license shown in the UI before download. Popular models with non-commercial weights (e.g. BRIA RMBG) are deliberately **not** included and PRs adding them are declined ([CONTRIBUTING.md](CONTRIBUTING.md)).
+Only **permissively-licensed** models ship in the catalog — verified per weight file, pinned by SHA-256, license shown in the UI before download. Popular models with non-commercial weights (e.g. BRIA RMBG) are deliberately **not** included and PRs adding them are declined ([CONTRIBUTING.md](https://github.com/ekinarca/batchroom/blob/main/CONTRIBUTING.md)).
 
 | Model | Task | License | Size |
 |---|---|---|---|
@@ -172,7 +172,7 @@ Only **permissively-licensed** models ship in the catalog — verified per weigh
 | `birefnet-general-lite` | background removal | MIT | 214 MB |
 | `realesrgan-x4` | 4× upscale | BSD-3-Clause | 64 MB |
 
-Provenance, hashes and the reproducible Real-ESRGAN ONNX conversion: [docs/MODELS.md](docs/MODELS.md).
+Provenance, hashes and the reproducible Real-ESRGAN ONNX conversion: [docs/MODELS.md](https://github.com/ekinarca/batchroom/blob/main/docs/MODELS.md).
 
 ## Web UI in 10 languages
 
@@ -186,7 +186,7 @@ Designed for the classic self-hosted trust model: bind to localhost or your LAN 
 - Output/thumbnail serving is path-traversal-safe; uploads are size-capped and name-sanitized.
 - EXIF is **dropped by default** on outputs (opt back in with `keep_metadata`).
 - Models verify against pinned SHA-256 — a tampered mirror can't swap weights.
-- No telemetry. Nothing phones home. Full notes: [SECURITY.md](SECURITY.md).
+- No telemetry. Nothing phones home. Full notes: [SECURITY.md](https://github.com/ekinarca/batchroom/blob/main/SECURITY.md).
 
 ## Configuration
 
@@ -223,12 +223,12 @@ python3.12 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/batchroom serve
 ```
 
-PRs welcome — recipes and marketplace preset updates especially (sizes drift; that curation is the product). See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+PRs welcome — recipes and marketplace preset updates especially (sizes drift; that curation is the product). See [CONTRIBUTING.md](https://github.com/ekinarca/batchroom/blob/main/CONTRIBUTING.md) and [docs/ARCHITECTURE.md](https://github.com/ekinarca/batchroom/blob/main/docs/ARCHITECTURE.md).
 
 ## Pro (for teams)
 
-The core above is the full product for individuals — MIT, unmetered, forever. **[Batchroom Pro](docs/PRO.md)** (€24/mo or €240/yr per server — **[buy here](https://buy.polar.sh/polar_cl_IOVj9pe9dlWU428JxxwJIal3GDohw7ZaurvbQ4NLXGO)**) adds what companies ask for: team accounts with roles and per-user API keys, priority queueing, email notifications, priority support. Licenses are offline Ed25519-signed keys — no phone-home, air-gap friendly, and an expired subscription never locks anyone out of their data. See [docs/PRO.md](docs/PRO.md).
+The core above is the full product for individuals — MIT, unmetered, forever. **[Batchroom Pro](https://github.com/ekinarca/batchroom/blob/main/docs/PRO.md)** (€24/mo or €240/yr per server — **[buy here](https://buy.polar.sh/polar_cl_IOVj9pe9dlWU428JxxwJIal3GDohw7ZaurvbQ4NLXGO)**) adds what companies ask for: team accounts with roles and per-user API keys, priority queueing, email notifications, priority support. Licenses are offline Ed25519-signed keys — no phone-home, air-gap friendly, and an expired subscription never locks anyone out of their data. See [docs/PRO.md](https://github.com/ekinarca/batchroom/blob/main/docs/PRO.md).
 
 ## License
 
-[MIT](LICENSE) for the entire core. The Pro module (`src/batchroom/pro/`) is source-available under [LICENSE-PRO](LICENSE-PRO); its features activate only with a license key, and no core functionality ever depends on it.
+[MIT](https://github.com/ekinarca/batchroom/blob/main/LICENSE) for the entire core. The Pro module (`src/batchroom/pro/`) is source-available under [LICENSE-PRO](https://github.com/ekinarca/batchroom/blob/main/LICENSE-PRO); its features activate only with a license key, and no core functionality ever depends on it.

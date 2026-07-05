@@ -57,8 +57,10 @@ dev = [
 batchroom = "batchroom.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/ekinarca/batchroom"
+Homepage = "https://batchroom.app"
+Repository = "https://github.com/ekinarca/batchroom"
 Documentation = "https://github.com/ekinarca/batchroom#readme"
+Changelog = "https://github.com/ekinarca/batchroom/blob/main/CHANGELOG.md"
 Issues = "https://github.com/ekinarca/batchroom/issues"
 
 [tool.setuptools.packages.find]
