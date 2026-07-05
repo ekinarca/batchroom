@@ -225,7 +225,7 @@ PRs welcome — recipes and marketplace preset updates especially (sizes drift; 
 
 ## Pro (for teams)
 
-The core above is the full product for individuals — MIT, unmetered, forever. **[Batchroom Pro](docs/PRO.md)** (€24/mo per server) adds what companies ask for: team accounts with roles and per-user API keys, priority queueing, email notifications, priority support. Licenses are offline Ed25519-signed keys — no phone-home, air-gap friendly, and an expired subscription never locks anyone out of their data. See [docs/PRO.md](docs/PRO.md).
+The core above is the full product for individuals — MIT, unmetered, forever. **[Batchroom Pro](docs/PRO.md)** (€24/mo or €240/yr per server — **[buy here](https://buy.polar.sh/polar_cl_IOVj9pe9dlWU428JxxwJIal3GDohw7ZaurvbQ4NLXGO)**) adds what companies ask for: team accounts with roles and per-user API keys, priority queueing, email notifications, priority support. Licenses are offline Ed25519-signed keys — no phone-home, air-gap friendly, and an expired subscription never locks anyone out of their data. See [docs/PRO.md](docs/PRO.md).
 
 ## License
 

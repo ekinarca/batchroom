@@ -18,6 +18,18 @@ python scripts/license_admin.py new-keypair --key-id prod-2027
 # add the printed public key to PUBLIC_KEYS (keep the old id for old keys)
 ```
 
+## Live sales channel (Polar, set up 2026-07-05)
+
+- Organization: `polar.sh/dashboard/batchroom` (account: ekinarca)
+- Products: "Batchroom Pro" €24/$25 monthly · "Batchroom Pro (Yearly)" €240/$250
+- Checkout link (in PRO.md + README):
+  `https://buy.polar.sh/polar_cl_IOVj9pe9dlWU428JxxwJIal3GDohw7ZaurvbQ4NLXGO`
+- Status: **test mode until Account Review is submitted & approved**
+  (Finance → Account). Remaining before submit: product website
+  (batchroom.app landing) + business support email (support@batchroom.app).
+- On each sale Polar emails you; fulfill per the steps below (the product's
+  benefit note tells buyers the key arrives within one business day).
+
 ## Fulfilling a sale (manual, fine up to ~50 sales/mo)
 
 1. Receive payment (see storefront options below).

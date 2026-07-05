@@ -30,9 +30,11 @@ core healthy (the Stirling-PDF model).
 - **Enterprise: from €99 / month** — SSO/audit roadmap access, more
   seats, SLA. Talk to us.
 
-**How to buy:** until the storefront is live, email
-**ekinarca40@gmail.com** with subject "Batchroom Pro" — you'll receive a
-payment link and your license key within one business day.
+**How to buy:** **[→ Buy Batchroom Pro](https://buy.polar.sh/polar_cl_IOVj9pe9dlWU428JxxwJIal3GDohw7ZaurvbQ4NLXGO)**
+(choose monthly or yearly at checkout; payments handled by Polar as
+merchant of record — they take care of VAT/invoicing). Your license key
+is emailed within one business day of purchase. Questions or trial keys:
+**ekinarca40@gmail.com** with subject "Batchroom Pro".
 
 ## How licensing works (honestly)
 
