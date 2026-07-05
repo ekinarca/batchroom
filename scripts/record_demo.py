@@ -126,9 +126,21 @@ def main() -> int:
         (data_dir / "models").symlink_to(models_src)
     photos = tmp / "photos"
     photos.mkdir()
-    make_mug(photos / "mug.jpg")
-    make_bottle(photos / "bottle.jpg")
-    make_box(photos / "box.jpg")
+    # Real product photography from docs/assets/demo-inputs/ (professional
+    # AI-generated shots, committed); synthetic fallback keeps the script
+    # self-contained if the assets are ever absent.
+    inputs_dir = REPO / "docs" / "assets" / "demo-inputs"
+    real = (
+        sorted([*inputs_dir.glob("*.jpg"), *inputs_dir.glob("*.png")])
+        if inputs_dir.is_dir() else []
+    )
+    if len(real) >= 3:
+        for src in real[:3]:
+            shutil.copy(src, photos / src.name)
+    else:
+        make_mug(photos / "mug.jpg")
+        make_bottle(photos / "bottle.jpg")
+        make_box(photos / "box.jpg")
 
     port = free_port()
     env = {**os.environ, "BATCHROOM_DATA_DIR": str(data_dir), "BATCHROOM_WATCH": "0"}
@@ -158,9 +170,9 @@ def main() -> int:
             page.wait_for_timeout(400)
             frames.append(page.screenshot(type="png"))
 
-            page.set_input_files("input[type=file]", [
-                str(photos / "mug.jpg"), str(photos / "bottle.jpg"), str(photos / "box.jpg"),
-            ])
+            page.set_input_files(
+                "input[type=file]", [str(p) for p in sorted(photos.iterdir())]
+            )
             page.wait_for_selector(".filecard", timeout=5000)
             page.wait_for_timeout(500)
             frames.append(page.screenshot(type="png"))
@@ -203,7 +215,7 @@ def main() -> int:
     for raw in frames:
         img = Image.open(io.BytesIO(raw)).convert("RGB")
         img.thumbnail((940, 10000), Image.Resampling.LANCZOS)
-        images.append(img.quantize(colors=128, dither=Image.Dither.FLOYDSTEINBERG))
+        images.append(img.quantize(colors=256, dither=Image.Dither.FLOYDSTEINBERG))
     OUT_GIF.parent.mkdir(parents=True, exist_ok=True)
     images[0].save(
         OUT_GIF, save_all=True, append_images=images[1:],

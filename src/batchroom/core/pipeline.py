@@ -180,7 +180,8 @@ def process_item(
             keep_metadata=recipe.output.keep_metadata,
         )
         if thumbs_dir is not None:
-            _write_atomic(thumbs_dir / f"{index:05d}-in.webp", make_thumbnail(image))
+            # 640px: crisp in the UI's before/after compare (renders up to ~460px)
+            _write_atomic(thumbs_dir / f"{index:05d}-in.webp", make_thumbnail(image, 640))
 
         for step_no, step in enumerate(recipe.steps):
             ctx.cancel_check()
@@ -204,7 +205,7 @@ def process_item(
 
         if thumbs_dir is not None and planned:
             _write_atomic(
-                thumbs_dir / f"{index:05d}-out.webp", make_thumbnail(planned[0].image)
+                thumbs_dir / f"{index:05d}-out.webp", make_thumbnail(planned[0].image, 640)
             )
     except CancelledError:
         result.status = "cancelled"
