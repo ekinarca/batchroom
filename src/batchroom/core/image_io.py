@@ -160,12 +160,25 @@ def rgba_array_to_pil(pixels: np.ndarray) -> Image.Image:
 # ---------------------------------------------------------------------------
 
 
+def _guard_pixel_count(pil: Image.Image, name: str) -> None:
+    """Enforce the documented ~300MP ceiling BEFORE decoding pixel data.
+
+    Pillow's own MAX_IMAGE_PIXELS only warns at 1x and raises at 2x; the
+    header gives us width/height for free, so we refuse deterministically."""
+    if pil.width * pil.height > Image.MAX_IMAGE_PIXELS:
+        raise ImageIOError(
+            f"image too large to decode safely: {name} "
+            f"({pil.width}x{pil.height}, limit ~{Image.MAX_IMAGE_PIXELS // 1_000_000}MP)"
+        )
+
+
 def load_image(path: str | Path) -> ImageData:
     path = Path(path)
     if not path.is_file():
         raise ImageIOError(f"file not found: {path}")
     try:
         with Image.open(path) as pil:
+            _guard_pixel_count(pil, path.name)
             pil.load()
             source_format = (pil.format or "png").lower()
             if source_format == "jpeg":
@@ -202,6 +215,7 @@ def load_image(path: str | Path) -> ImageData:
 def load_image_bytes(data: bytes, *, name: str = "upload") -> ImageData:
     try:
         with Image.open(io.BytesIO(data)) as pil:
+            _guard_pixel_count(pil, name)
             pil.load()
             source_format = (pil.format or "png").lower()
             if source_format == "jpeg":

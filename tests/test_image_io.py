@@ -56,6 +56,25 @@ class TestFormats:
         img = image_io.load_image(path)
         assert (img.width, img.height) == (10, 30)
 
+    def test_decompression_bomb_refused_at_header(self, tmp_path):
+        # Hand-crafted PNG header claiming 20000x15010 (~300.2MP) — the guard
+        # must refuse from the header alone, before any pixel decode.
+        import struct
+        import zlib
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            return (struct.pack(">I", len(data)) + kind + data
+                    + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+
+        png = (b"\x89PNG\r\n\x1a\n"
+               + chunk(b"IHDR", struct.pack(">IIBBBBB", 20000, 15010, 8, 2, 0, 0, 0))
+               + chunk(b"IDAT", zlib.compress(b"\x00"))
+               + chunk(b"IEND", b""))
+        bomb = tmp_path / "bomb.png"
+        bomb.write_bytes(png)
+        with pytest.raises(ImageIOError, match="too large"):
+            image_io.load_image(bomb)
+
     def test_decode_error_is_friendly(self, tmp_path):
         bad = tmp_path / "bad.jpg"
         bad.write_bytes(b"not an image at all")

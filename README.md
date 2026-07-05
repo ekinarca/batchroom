@@ -155,6 +155,8 @@ Measured on an Apple M-series CPU (32 cores, CPU inference only — no GPU requi
 | Resize + convert | libjpeg/libwebp | ~0.01 s/image |
 | Upscale 4× (512²→2048²) | `realesrgan-x4` | ~10 s/image |
 
+Model rows are pure inference time. End-to-end (decode → inference → PNG encode, 4 parallel workers) the same machine sustains **~7,800 images/hour** of 1080p background removal — measured by [`scripts/acceptance_test.py`](scripts/acceptance_test.py), which re-verifies every claim in this README against a live server.
+
 Upscaling on CPU is slow — that's physics, not a bug. The queue is built for it: submit, walk away, get a webhook.
 
 ## AI models & licenses
