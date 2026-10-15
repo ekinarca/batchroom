@@ -21,9 +21,12 @@ internet.
   password hashes, server-side sessions (only SHA-256 of tokens is
   stored; cookies are HttpOnly + SameSite=Lax), per-user API keys
   (`brk_…`, stored hashed), admin/member roles, login rate-limiting
-  (5/min per source), and job-level ownership — members can only see and
-  download their own jobs (non-owners get 404, not 403, so job ids don't
-  leak). The env API key keeps working as an admin equivalent so
+  (5 failed attempts/min per account and source, 30/min per source —
+  spraying many emails doesn't reset the counter), and job-level
+  ownership — members can only see and download their own jobs
+  (non-owners get 404, not 403, so job ids don't leak); only admins can
+  delete the shared model weights. The env API key keeps working as an
+  admin equivalent (compared in constant time) so
   existing automations survive the upgrade. We deliberately did not add
   CSRF tokens: state-changing routes are JSON/fetch-only, cookies are
   SameSite=Lax and CORS stays closed — document this if you put the API
@@ -57,3 +60,9 @@ internet.
 Terminate TLS at your proxy (Caddy/Traefik/nginx) and forward to
 `batchroom:5151`. SSE (`/api/events`) needs response buffering disabled;
 Batchroom already sends `X-Accel-Buffering: no` for nginx.
+
+Login rate limits are keyed by client address. When the proxy runs in
+another container, Batchroom sees every client as the proxy's address
+unless uvicorn trusts its `X-Forwarded-For` header: set
+`FORWARDED_ALLOW_IPS` to the proxy's address (e.g. `172.18.0.2`, or `*`
+on a network only the proxy can reach).

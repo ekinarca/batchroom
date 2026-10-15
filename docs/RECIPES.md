@@ -29,7 +29,13 @@ only the final write encodes. `convert` and `preset-pack` set the output
 encoding; everything upstream is quality-neutral.
 
 Rename pattern variables: `{original}` `{preset}` `{index}` `{recipe}`
-`{date}` `{width}` `{height}`.
+`{date}` (the job's start date, `YYYYMMDD`) `{width}` `{height}`.
+
+Geometry limits, checked when the recipe is validated: sizes are
+1–20000 px per side, percentage padding stays under 50%, pixel padding
+is 0–20000. Any single result above ~240 MP (resize, composite canvas,
+preset, upscale) fails that item with a clear error instead of
+exhausting the server's memory.
 
 ---
 
@@ -50,7 +56,7 @@ transparency is respected (multiplied, not replaced).
 | param | default | notes |
 |---|---|---|
 | `scale` | `4` | `2` or `4` (2 uses the 4× model + downsample) |
-| `model` | `auto` | `auto` → `realesrgan-x4` if downloaded, else an error telling you to pull it; `lanczos` always works, instantly |
+| `model` | `auto` | `auto` → `realesrgan-x4`, downloaded once on first use (checksum-verified); `lanczos` always works, instantly |
 | `tile` | `256` | tile size for bounded memory; lower on small devices |
 
 Output capped at ~240 MP for safety. CPU 4× is slow (~10 s per 512² on a

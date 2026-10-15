@@ -38,7 +38,7 @@ Adding a model to `src/batchroom/models/registry.py` requires:
 ```bash
 python3.12 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest            # full suite, ~5 s
+.venv/bin/pytest            # full suite, about a minute
 .venv/bin/ruff check src tests scripts
 .venv/bin/batchroom serve   # UI at :5151
 ```

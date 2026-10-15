@@ -116,7 +116,7 @@ watch:
     output: /output/products
 ```
 
-Files dropped into the folder are picked up **only after they finish copying** (size-stability check — safe on SMB/NFS, which is why Batchroom polls instead of using inotify), processed, then moved to `done/` or `failed/` beside the folder. Outputs + `manifest.json` land in the output directory. Half-copied files, our own outputs and hidden files are never ingested.
+Files dropped into the folder are picked up **only after they finish copying** (size-stability check — safe on SMB/NFS, which is why Batchroom polls instead of using inotify), processed, then moved to `done/` or `failed/` beside the folder. Outputs + `manifest.json` land in the output directory. Half-copied files, our own outputs, hidden files and NAS system folders (Synology `@eaDir` thumbnails, `#recycle`, `.snapshot`, `$RECYCLE.BIN`…) are never ingested.
 
 ## REST API
 
@@ -130,7 +130,9 @@ curl -F recipe=ecom-packshot -F files=@a.jpg -F files=@b.png \
 # → {"id":"j-20260705-1a2b3c", "status":"queued", ...}
 
 curl http://localhost:5151/api/jobs/j-20260705-1a2b3c      # progress + per-item results
-curl -O http://localhost:5151/api/jobs/j-20260705-1a2b3c/archive   # everything as ZIP
+curl -O http://localhost:5151/api/jobs/j-20260705-1a2b3c/archive   # this job's outputs as ZIP (streamed)
+curl http://localhost:5151/api/jobs/j-20260705-1a2b3c/manifest     # the job's manifest, also while running
+curl -X POST http://localhost:5151/api/jobs/j-20260705-1a2b3c/retry  # re-run failed/cancelled items
 
 # or process files already on the server (NAS mounts, CI):
 curl -H 'Content-Type: application/json' -d '{
@@ -212,6 +214,8 @@ Designed for the classic self-hosted trust model: bind to localhost or your LAN 
 
 **Where do my files go?** `data/jobs/<job-id>/out/` for uploads, your configured output for watch/path jobs. Deleting a job from the UI removes only files Batchroom created.
 
+**A batch partly failed — do I start over?** No. Fix the cause (a recipe typo, a network hiccup during the first model download…) and press **Retry** on the job (or `POST /api/jobs/<id>/retry`): only the failed and cancelled items run again; finished outputs are kept.
+
 **Can I run it on a Raspberry Pi / ARM NAS?** Yes — the image is amd64 + arm64. Use `u2netp` or `silueta` on small boards.
 
 ## Contributing & development
@@ -219,7 +223,7 @@ Designed for the classic self-hosted trust model: bind to localhost or your LAN 
 ```bash
 git clone https://github.com/ekinarca/batchroom && cd batchroom
 python3.12 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest                 # 151 tests incl. golden-image regression suite
+.venv/bin/pytest                 # full suite incl. golden-image regression tests
 .venv/bin/batchroom serve
 ```
 
