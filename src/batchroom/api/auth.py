@@ -14,8 +14,10 @@ Two modes, switched by license + data:
 
 from __future__ import annotations
 
+import hmac
+import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -120,7 +122,9 @@ def get_actor(request: Request) -> Actor:
     supplied = _supplied_key(request)
 
     # env key is always an admin passe-partout (automation continuity)
-    if settings.api_key and supplied == settings.api_key:
+    if settings.api_key and supplied and hmac.compare_digest(
+        supplied.encode("utf-8"), settings.api_key.encode("utf-8")
+    ):
         actor = Actor(kind="env")
         request.state.actor = actor
         return actor
@@ -164,24 +168,50 @@ def actor_of(request: Request) -> Actor:
 
 @dataclass
 class _RateLimiter:
+    """Sliding-window counter of *failed* attempts per key.
+
+    Memory stays bounded without ever wiping live buckets: wiping the whole
+    table once it filled up let an attacker reset their own counter by
+    spraying a thousand throwaway keys."""
+
     max_attempts: int = 5
     window_seconds: float = 60.0
-    buckets: dict = field(default_factory=dict)
+    max_keys: int = 10000
+    buckets: OrderedDict = field(default_factory=OrderedDict)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def allow(self, key: str) -> bool:
-        now = time.monotonic()
-        bucket = self.buckets.setdefault(key, deque())
+    def _recent(self, key: str, now: float) -> deque | None:
+        bucket = self.buckets.get(key)
+        if bucket is None:
+            return None
         while bucket and now - bucket[0] > self.window_seconds:
             bucket.popleft()
-        if len(bucket) >= self.max_attempts:
-            return False
-        bucket.append(now)
-        if len(self.buckets) > 1000:  # bound memory
-            self.buckets.clear()
-        return True
+        if not bucket:
+            del self.buckets[key]
+            return None
+        return bucket
+
+    def blocked(self, key: str) -> bool:
+        with self._lock:
+            bucket = self._recent(key, time.monotonic())
+            return bucket is not None and len(bucket) >= self.max_attempts
+
+    def hit(self, key: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            bucket = self._recent(key, now)
+            if bucket is None:
+                bucket = self.buckets[key] = deque()
+            bucket.append(now)
+            self.buckets.move_to_end(key)
+            while len(self.buckets) > self.max_keys:  # evict least recently failing
+                self.buckets.popitem(last=False)
 
 
+# 5 failures/min per account+source; 30/min per source across all accounts,
+# so spraying many emails from one address is throttled as well.
 _login_limiter = _RateLimiter()
+_source_limiter = _RateLimiter(max_attempts=30)
 
 
 # ---------------------------------------------------------------------------
@@ -202,10 +232,13 @@ def login(request: Request, response: Response, body: LoginBody) -> dict:
     if not users_exist(app):
         raise HTTPException(status_code=400, detail="multi-user mode is not set up")
     client = request.client.host if request.client else "?"
-    if not _login_limiter.allow(f"{client}:{body.email.lower()}"):
+    account_key = f"{client}:{body.email.strip().lower()}"
+    if _source_limiter.blocked(client) or _login_limiter.blocked(account_key):
         raise HTTPException(status_code=429, detail="too many attempts — wait a minute")
     user = authenticate(app.state.db, body.email, body.password)
     if user is None:
+        _login_limiter.hit(account_key)
+        _source_limiter.hit(client)
         raise HTTPException(status_code=401, detail="invalid email or password")
     token = create_session(app.state.db, user["id"])
     response.set_cookie(

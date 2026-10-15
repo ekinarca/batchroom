@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -52,6 +53,8 @@ class RecipeStore:
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     settings.ensure_dirs()
+    # ZIP downloads stream now; drop the on-disk cache older versions kept
+    shutil.rmtree(settings.tmp_dir / "archives", ignore_errors=True)
 
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
