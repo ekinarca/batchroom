@@ -23,12 +23,13 @@ from pathlib import Path
 from ..config import Settings
 from ..core.errors import CancelledError, JobError
 from ..core.image_io import READ_EXTENSIONS
+from ..core.inputs import is_hidden_file_name, walk_files
 from ..core.manifest import MANIFEST_NAME, build_manifest, utc_now_iso, write_manifest
 from ..core.pipeline import ItemResult, JobNames, OutputRecord, process_item
 from ..core.recipe import Recipe
 from ..models.manager import ModelManager
 from ..ops.base import PipelineContext
-from .db import Database, row_to_item, row_to_job
+from .db import COUNTERS_FROM_ITEMS, Database, row_to_item, row_to_job
 from .events import EventBus
 
 log = logging.getLogger("batchroom.queue")
@@ -70,6 +71,7 @@ class JobQueue:
         self._names: dict[str, JobNames] = {}
         self._names_lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._webhook_tasks: set[asyncio.Task] = set()  # strong refs: no mid-flight GC
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -91,37 +93,57 @@ class JobQueue:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._task
+        if self._webhook_tasks:  # let deliveries already in flight land
+            await asyncio.wait(set(self._webhook_tasks), timeout=3.0)
         self._pool.shutdown(wait=False, cancel_futures=True)
 
     def _recover(self) -> None:
-        """Called on boot: re-queue items that were mid-flight when we died."""
+        """Called on boot: re-queue items that were mid-flight when we died,
+        and settle jobs the crash caught between two states."""
+        now = _now()
         with self.db.connect() as conn:
             crashed = conn.execute(
                 "UPDATE items SET status='pending', started_at=NULL WHERE status='running' "
                 "RETURNING job_id"
             ).fetchall()
-            cancelled_jobs = conn.execute(
-                "SELECT id FROM jobs WHERE cancel_requested=1 AND status IN ('queued','running')"
+            # A cancel requested before the crash still stands: the claim query
+            # skips these jobs, so their pending items would wait forever.
+            for row in conn.execute(
+                "SELECT id FROM jobs WHERE cancel_requested=1 AND finished_at IS NULL"
+            ).fetchall():
+                self._cancel_pending(conn, row["id"], now)
+            # Every item settled but the job never flipped (crash between the
+            # last item and finalize): finalize it now, or it shows 'running' forever.
+            unsettled = conn.execute(
+                "SELECT j.id FROM jobs j WHERE j.finished_at IS NULL AND NOT EXISTS ("
+                " SELECT 1 FROM items i WHERE i.job_id = j.id"
+                " AND i.status IN ('pending', 'running'))"
             ).fetchall()
-        for row in cancelled_jobs:
-            self._cancelled.add(row["id"])
         if crashed:
             log.info("recovered %d in-flight item(s) from a previous run", len(crashed))
+        for row in unsettled:
+            log.info("finalizing job %s left unsettled by a previous run", row["id"])
+            self._maybe_finalize(row["id"])
 
     # ------------------------------------------------------------------
     # submission
     # ------------------------------------------------------------------
-    def collect_input_files(self, paths: list[Path], recipe: Recipe) -> tuple[list[Path], int]:
-        """Expand dirs, filter to files the recipe accepts. Returns (files, skipped)."""
+    def collect_input_files(
+        self, paths: list[Path], recipe: Recipe, *, exclude_dirs: tuple[Path, ...] = ()
+    ) -> tuple[list[Path], int]:
+        """Expand dirs, filter to files the recipe accepts. Returns (files, skipped).
+
+        Hidden and NAS system folders are never walked, nor ``exclude_dirs``
+        (an output folder inside the input tree must not be re-ingested)."""
         files: list[Path] = []
         skipped = 0
         for path in paths:
             if path.is_dir():
-                candidates = sorted(p for p in path.rglob("*") if p.is_file())
+                candidates = list(walk_files(path, exclude_dirs=exclude_dirs))
             else:
                 candidates = [path]
             for candidate in candidates:
-                if candidate.name.startswith("."):
+                if is_hidden_file_name(candidate.name):
                     continue
                 ext = candidate.suffix.lower()
                 if ext not in READ_EXTENSIONS:
@@ -242,13 +264,71 @@ class JobQueue:
         self._cancelled.add(job_id)
         with self.db.connect() as conn:
             conn.execute("UPDATE jobs SET cancel_requested=1 WHERE id=?", (job_id,))
-            conn.execute(
-                "UPDATE items SET status='cancelled', error='cancelled', finished_at=? "
-                "WHERE job_id=? AND status='pending'",
-                (_now(), job_id),
-            )
+            self._cancel_pending(conn, job_id, _now())
         self._maybe_finalize(job_id)
         self._publish_job(job_id)
+        return self.get_job(job_id)
+
+    @staticmethod
+    def _cancel_pending(conn, job_id: str, now: str) -> int:
+        """Cancel a job's pending items and count them on the job row, so
+        done+failed+cancelled always adds up to total."""
+        count = conn.execute(
+            "UPDATE items SET status='cancelled', error='cancelled', finished_at=? "
+            "WHERE job_id=? AND status='pending'",
+            (now, job_id),
+        ).rowcount
+        if count:
+            conn.execute(
+                "UPDATE jobs SET cancelled = cancelled + ? WHERE id=?", (count, job_id)
+            )
+        return count
+
+    def retry(self, job_id: str) -> dict:
+        """Re-queue a finished job's failed and cancelled items.
+
+        Only items whose source file still exists come back; done items and
+        their outputs are untouched. Watch-folder sources have already been
+        moved to failed/, so those jobs retry by dropping the files again."""
+        job = self.get_job(job_id)
+        if job["status"] not in ("done", "cancelled"):
+            raise JobError("job is still running", hint="wait for it to finish first")
+        if job["source"] == "watch":
+            raise JobError(
+                "watch-folder jobs cannot be retried here",
+                hint="move the files from failed/ back into the watched folder",
+            )
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT idx, status, source_path FROM items"
+                " WHERE job_id=? AND status IN ('failed', 'cancelled')",
+                (job_id,),
+            ).fetchall()
+            again = [r for r in rows if Path(r["source_path"]).is_file()]
+            if not again:
+                raise JobError(
+                    "nothing to retry",
+                    hint="no failed or cancelled items whose source file still exists",
+                )
+            failed = sum(1 for r in again if r["status"] == "failed")
+            conn.executemany(
+                "UPDATE items SET status='pending', error=NULL, result_json=NULL,"
+                " started_at=NULL, finished_at=NULL WHERE job_id=? AND idx=?",
+                [(job_id, r["idx"]) for r in again],
+            )
+            conn.execute(
+                "UPDATE jobs SET status='queued', finished_at=NULL, cancel_requested=0,"
+                " error=NULL, failed=max(0, failed - ?), cancelled=max(0, cancelled - ?)"
+                " WHERE id=?",
+                (failed, len(again) - failed, job_id),
+            )
+        self._cancelled.discard(job_id)
+        with self._names_lock:
+            self._names.pop(job_id, None)  # rebuilt from the done items' outputs
+        log.info("job %s: %d item(s) re-queued", job_id, len(again))
+        self._publish_job(job_id)
+        self._nudge()
         return self.get_job(job_id)
 
     def delete(self, job_id: str) -> None:
@@ -274,7 +354,16 @@ class JobQueue:
     async def _dispatch_loop(self) -> None:
         assert self._wake is not None
         while self._running:
-            progressed = await self._dispatch_once()
+            try:
+                progressed = await self._dispatch_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A transient failure (database locked, disk full...) must not
+                # stop the queue for good: log it and try again shortly.
+                log.exception("dispatcher error; retrying")
+                progressed = False
+                await asyncio.sleep(1.0)
             if not progressed:
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(self._wake.wait(), timeout=2.0)
@@ -283,11 +372,15 @@ class JobQueue:
     async def _dispatch_once(self) -> bool:
         assert self._sem is not None and self._loop is not None
         await self._sem.acquire()
-        claimed = self._claim_next()
-        if claimed is None:
+        try:
+            claimed = self._claim_next()
+            if claimed is None:
+                self._sem.release()
+                return False
+            future = self._loop.run_in_executor(self._pool, self._run_item, claimed)
+        except BaseException:
             self._sem.release()
-            return False
-        future = self._loop.run_in_executor(self._pool, self._run_item, claimed)
+            raise
 
         def _done(_f) -> None:  # runs in the loop thread (asyncio future callback)
             self._sem.release()
@@ -299,6 +392,9 @@ class JobQueue:
 
     def _claim_next(self) -> dict | None:
         with self.db.connect() as conn:
+            # Select + mark atomically: a cancel landing in between must not
+            # see its pending item flipped back to 'running'.
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT i.job_id, i.idx, i.source_path, i.source_name, j.recipe, j.output_dir,"
                 " j.started_at AS job_started "
@@ -310,7 +406,8 @@ class JobQueue:
                 return None
             now = _now()
             conn.execute(
-                "UPDATE items SET status='running', started_at=? WHERE job_id=? AND idx=?",
+                "UPDATE items SET status='running', started_at=?"
+                " WHERE job_id=? AND idx=? AND status='pending'",
                 (now, row["job_id"], row["idx"]),
             )
             conn.execute(
@@ -351,7 +448,10 @@ class JobQueue:
             result = ItemResult(
                 source=claimed["source_name"], status="failed", error=f"worker crash: {exc}"
             )
-        self._record_result(job_id, idx, result)
+        try:
+            self._record_result(job_id, idx, result)
+        except Exception:  # e.g. disk full; the item re-runs after a restart
+            log.exception("cannot record the result of %s[%d]", job_id, idx)
 
     def _execute_item(self, claimed: dict) -> ItemResult:
         job_id, idx = claimed["job_id"], claimed["idx"]
@@ -373,10 +473,12 @@ class JobQueue:
                 "item.progress", {"job_id": job_id, "idx": idx, "message": message}
             )
 
+        # {date} is the job's start date for every item, even across midnight
+        started = claimed.get("job_started") or _now()
         ctx = PipelineContext(
             recipe_name=recipe.name,
             job_id=job_id,
-            date=datetime.now(UTC).strftime("%Y%m%d"),
+            date=started[:10].replace("-", ""),
             settings=self.settings,
             models=self.models,
             cancel_check=cancel_check,
@@ -432,36 +534,30 @@ class JobQueue:
             ).fetchall()
 
         # Write the manifest BEFORE flipping status: a 'done' job always has
-        # its manifest on disk. Concurrent workers may both reach this point;
-        # the guarded UPDATE below lets exactly one of them finalize.
-        results_early = [self._result_from_row(row) for row in item_rows]
-        recipe_early = self.recipes_provider().get(job_row["recipe"])
-        manifest_early = build_manifest(
-            job_id=job_id,
-            recipe_name=job_row["recipe"],
-            recipe_version=recipe_early.version if recipe_early else 1,
-            output_structure=(
-                recipe_early.output.structure if recipe_early else "per-preset-folder"
-            ),
-            started_at=job_row["started_at"] or job_row["created_at"],
-            finished_at=utc_now_iso(),
-            results=results_early,
-        )
-        try:
-            write_manifest(Path(job_row["output_dir"]), manifest_early)
-        except OSError as exc:
-            log.error("cannot write manifest for %s: %s", job_id, exc)
+        # its manifest on disk (unless the recipe opted out with
+        # output.manifest: false). Concurrent workers may both reach this
+        # point; the guarded UPDATE below lets exactly one of them finalize.
+        finished_at = utc_now_iso()
+        recipe = self.recipes_provider().get(job_row["recipe"])
+        manifest = self._manifest_from_rows(job_row, item_rows, finished_at, recipe)
+        if recipe is None or recipe.output.manifest:
+            try:
+                write_manifest(Path(job_row["output_dir"]), manifest)
+            except OSError as exc:
+                log.error("cannot write manifest for %s: %s", job_id, exc)
 
         with self.db.connect() as conn:
+            # Counters are re-derived from the items: the final record is exact
+            # whatever path each item took (worker, cancel, crash recovery).
             cursor = conn.execute(
-                "UPDATE jobs SET status=?, finished_at=? WHERE id=? AND finished_at IS NULL",
-                (final_status, _now(), job_id),
+                f"UPDATE jobs SET status=?, finished_at=?, {COUNTERS_FROM_ITEMS}"
+                " WHERE id=? AND finished_at IS NULL",
+                (final_status, finished_at, job_id),
             )
             if cursor.rowcount == 0:
                 return  # another worker finalized first
 
         job = self.get_job(job_id)
-        manifest = manifest_early
         with self._names_lock:
             self._names.pop(job_id, None)
         self._cancelled.discard(job_id)
@@ -478,6 +574,37 @@ class JobQueue:
                 self.notify(self.get_job(job_id), manifest)
             except Exception:  # notifications must never affect jobs
                 log.exception("completion notification failed for %s", job_id)
+
+    def _manifest_from_rows(self, job_row, item_rows, finished_at, recipe=None) -> dict:
+        if recipe is None:
+            recipe = self.recipes_provider().get(job_row["recipe"])
+        return build_manifest(
+            job_id=job_row["id"],
+            recipe_name=job_row["recipe"],
+            recipe_version=recipe.version if recipe else 1,
+            output_structure=recipe.output.structure if recipe else "per-preset-folder",
+            started_at=job_row["started_at"] or job_row["created_at"],
+            finished_at=finished_at,
+            results=[self._result_from_row(row) for row in item_rows],
+        )
+
+    def manifest_for(self, job_id: str) -> dict:
+        """The job's manifest rebuilt from the database — always this job's
+        own record, even when several jobs share one output folder."""
+        with self.db.connect() as conn:
+            job_row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if job_row is None:
+                raise JobError(f"job '{job_id}' not found")
+            item_rows = conn.execute(
+                "SELECT * FROM items WHERE job_id=? ORDER BY idx", (job_id,)
+            ).fetchall()
+        manifest = self._manifest_from_rows(job_row, item_rows, job_row["finished_at"])
+        manifest["finished_at"] = job_row["finished_at"]  # None while still running
+        return manifest
+
+    def wants_manifest_file(self, recipe_name: str) -> bool:
+        recipe = self.recipes_provider().get(recipe_name)
+        return recipe is None or recipe.output.manifest
 
     @staticmethod
     def _result_from_row(row) -> ItemResult:
@@ -504,9 +631,14 @@ class JobQueue:
         loop = self._loop
         if loop is None or not loop.is_running():
             return
-        loop.call_soon_threadsafe(
-            lambda: asyncio.ensure_future(deliver_webhook(url, manifest))
-        )
+
+        def _start() -> None:  # runs in the loop thread
+            task = loop.create_task(deliver_webhook(url, manifest))
+            self._webhook_tasks.add(task)
+            task.add_done_callback(self._webhook_tasks.discard)
+
+        with contextlib.suppress(RuntimeError):  # loop closing during shutdown
+            loop.call_soon_threadsafe(_start)
 
     # ------------------------------------------------------------------
     def _publish_job(self, job_id: str) -> None:
