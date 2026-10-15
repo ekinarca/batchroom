@@ -65,6 +65,17 @@ is an automatic "needs work".
   architecture, not a placeholder.
 - User inputs are immutable; outputs are written atomically.
 
+## Releasing (maintainers)
+
+1. Bump `version` in `pyproject.toml` and `__version__` in
+   `src/batchroom/__init__.py`; turn `[Unreleased]` in `CHANGELOG.md`
+   into `[X.Y.Z] — YYYY-MM-DD` above a fresh, empty `[Unreleased]`.
+2. Merge to `main` with CI green.
+3. Tag `vX.Y.Z` on `main` and push the tag. The release workflow
+   publishes the multi-arch image to GHCR (`X.Y.Z`, `X.Y`, `latest`) and
+   then the GitHub release page, its notes taken from the CHANGELOG
+   section (`python scripts/release_notes.py vX.Y.Z` previews them).
+
 ## The Pro module
 
 `src/batchroom/pro/` is source-available under LICENSE-PRO (not MIT) and

@@ -1,12 +1,13 @@
 name: Release
 
-# Tag vX.Y.Z -> multi-arch image on GHCR (amd64 + arm64; arm64 matters for NAS).
+# Tag vX.Y.Z -> multi-arch image on GHCR (amd64 + arm64; arm64 matters for NAS),
+# then the GitHub release page with that version's CHANGELOG.md section.
 on:
   push:
     tags: ["v*.*.*"]
 
 permissions:
-  contents: read
+  contents: write   # the GitHub release page
   packages: write
 
 jobs:
@@ -38,3 +39,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # After the push, so the page never advertises an image that isn't there.
+      - name: GitHub release page (notes from CHANGELOG.md)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/release_notes.py "$GITHUB_REF_NAME" "ghcr.io/$GITHUB_REPOSITORY" > notes.md
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "Batchroom ${GITHUB_REF_NAME#v}" --notes-file notes.md --verify-tag
