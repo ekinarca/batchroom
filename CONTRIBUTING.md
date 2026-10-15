@@ -71,10 +71,13 @@ is an automatic "needs work".
    `src/batchroom/__init__.py`; turn `[Unreleased]` in `CHANGELOG.md`
    into `[X.Y.Z] — YYYY-MM-DD` above a fresh, empty `[Unreleased]`.
 2. Merge to `main` with CI green.
-3. Tag `vX.Y.Z` on `main` and push the tag. The release workflow
-   publishes the multi-arch image to GHCR (`X.Y.Z`, `X.Y`, `latest`) and
-   then the GitHub release page, its notes taken from the CHANGELOG
-   section (`python scripts/release_notes.py vX.Y.Z` previews them).
+3. Tag `vX.Y.Z` on `main` — `git tag vX.Y.Z origin/main && git push
+   origin vX.Y.Z`, or on GitHub: Releases → Draft a new release → new tag
+   `vX.Y.Z` on `main` → Publish (notes can stay empty). The release
+   workflow publishes the multi-arch image to GHCR (`X.Y.Z`, `X.Y`,
+   `latest`), then the release page's notes from the CHANGELOG section
+   (`python scripts/release_notes.py vX.Y.Z` previews them); notes
+   written by hand on GitHub are kept.
 
 ## The Pro module
 
