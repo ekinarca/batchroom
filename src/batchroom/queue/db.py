@@ -15,7 +15,14 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# SET clause re-deriving a job's counters from its items (jobs.id in scope).
+COUNTERS_FROM_ITEMS = (
+    "done = (SELECT count(*) FROM items WHERE job_id = jobs.id AND status = 'done'),"
+    " failed = (SELECT count(*) FROM items WHERE job_id = jobs.id AND status = 'failed'),"
+    " cancelled = (SELECT count(*) FROM items WHERE job_id = jobs.id AND status = 'cancelled')"
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -97,6 +104,10 @@ def migrate(conn: sqlite3.Connection) -> None:
         if "user_id" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN user_id INTEGER")
     conn.executescript(SCHEMA)
+    if has_jobs and version < 3:
+        # v0.1.0 did not count items cancelled while still pending, so
+        # finished cancelled jobs showed e.g. "2/30" forever. Repair history.
+        conn.execute(f"UPDATE jobs SET {COUNTERS_FROM_ITEMS} WHERE finished_at IS NOT NULL")
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
