@@ -4,6 +4,14 @@ All notable changes to Batchroom. Format: [Keep a Changelog](https://keepachange
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-15
+
+Upgrading from 0.1.0 is drop-in: the database migrates itself on first
+start (schema v3, which also repairs old cancelled jobs' counters). If
+a reverse proxy in another container fronts Batchroom, set
+`FORWARDED_ALLOW_IPS` so login limits see real client addresses (see
+SECURITY.md).
+
 ### Added
 
 - First-run onboarding tour: a three-step "how it works" dialog on first
