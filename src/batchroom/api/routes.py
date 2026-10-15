@@ -7,33 +7,38 @@ async job submission returning 202-style job objects immediately.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+import shutil
 import threading
-import zipfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Request
-from fastapi.exceptions import HTTPException
+from fastapi import APIRouter, Depends, Request
+from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from starlette.datastructures import UploadFile
 
 from .. import __version__
 from ..config import Settings
 from ..core.errors import BatchroomError, JobError, ModelError, RecipeError
 from ..core.image_io import FORMATS, format_available
+from ..core.inputs import safe_upload_name
+from ..core.manifest import MANIFEST_NAME
 from ..core.recipe import load_recipe_text
 from ..i18n import available_languages, load_strings
 from ..models.registry import CATALOG
 from ..ops.base import all_ops
 from ..queue.events import sse_format
 from ..queue.jobs import JobQueue, new_job_id
-from .auth import actor_of, features
+from .archive import stream_zip
+from .auth import actor_of, features, require_admin
 
 router = APIRouter()
 open_router = APIRouter()  # unauthenticated: i18n only (login screen needs strings)
 
-_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._ ()-]+")
+MAX_UPLOAD_FILES = 10000  # per request; matches the JSON mode's path limit
 
 
 def _clamp_priority(request: Request, value) -> int:
@@ -60,6 +65,17 @@ def _error(exc: BatchroomError, status: int = 400) -> HTTPException:
     if exc.hint:
         detail["hint"] = exc.hint
     return HTTPException(status_code=status, detail=detail)
+
+
+def _webhook_or_400(url: str | None) -> str | None:
+    """Reject unusable webhook targets at submit time, not silently at delivery."""
+    url = (url or "").strip()
+    if not url:
+        return None
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise HTTPException(status_code=400, detail="webhook_url must be an http(s) URL")
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +160,19 @@ def validate_recipe(body: RecipeBody) -> dict:
     return {"valid": True, "summary": recipe.summary()}
 
 
+def _user_recipe_path(request: Request, name: str) -> Path | None:
+    """The file in the user recipe dir that currently defines ``name``.
+
+    Its filename may differ from the recipe name (dropped in by hand); edits
+    must go back to that file, or the old file keeps shadowing them."""
+    recipe = request.app.state.recipes.get(force=True).get(name)
+    if recipe is None or recipe.path is None:
+        return None
+    user_dir = _settings(request).recipes_dir.resolve()
+    path = recipe.path.resolve()
+    return path if path.parent == user_dir else None
+
+
 @router.post("/recipes", status_code=201)
 def save_recipe(request: Request, body: RecipeBody) -> dict:
     settings = _settings(request)
@@ -151,9 +180,11 @@ def save_recipe(request: Request, body: RecipeBody) -> dict:
         recipe = load_recipe_text(body.text)
     except RecipeError as exc:
         raise _error(exc) from exc
-    path = settings.recipes_dir / f"{recipe.name}.yaml"
+    path = _user_recipe_path(request, recipe.name) or settings.recipes_dir / f"{recipe.name}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body.text, encoding="utf-8")
+    tmp = path.with_name(path.name + ".part")  # discovery only globs *.yaml / *.yml
+    tmp.write_text(body.text, encoding="utf-8")
+    tmp.replace(path)
     request.app.state.recipes.get(force=True)
     return {"saved": recipe.name, "path": str(path)}
 
@@ -167,6 +198,11 @@ def delete_recipe(request: Request, name: str) -> dict:
     for suffix in (".yaml", ".yml"):
         path = settings.recipes_dir / f"{name}{suffix}"
         if path.is_file():
+            path.unlink()
+            removed = True
+    if not removed:
+        path = _user_recipe_path(request, name)
+        if path is not None and path.is_file():
             path.unlink()
             removed = True
     if not removed:
@@ -257,8 +293,9 @@ def verify_model(request: Request, model_id: str) -> dict:
     return {"model": model_id, "ok": ok, "detail": detail}
 
 
-@router.delete("/models/{model_id}")
+@router.delete("/models/{model_id}", dependencies=[Depends(require_admin)])
 def delete_model(request: Request, model_id: str) -> dict:
+    """Admin-only in multi-user mode: the weights are shared by every user."""
     manager = request.app.state.models
     if model_id not in CATALOG:
         raise HTTPException(status_code=404, detail=f"unknown model '{model_id}'")
@@ -287,22 +324,20 @@ def _resolve_recipe(request: Request, name: str):
     return recipe
 
 
-async def _save_upload(upload: UploadFile, target: Path, limit_bytes: int) -> int:
+def _copy_upload(src, target: Path, limit_bytes: int, name: str) -> int:
+    """Copy a parsed (spooled) upload to its job dir. Runs in a worker
+    thread: hundreds of MB of disk writes must not stall the event loop."""
     size = 0
     target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with open(target, "wb") as fh:
-            while chunk := await upload.read(1 << 20):
-                size += len(chunk)
-                if size > limit_bytes:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"file '{upload.filename}' exceeds the upload limit",
-                    )
-                fh.write(chunk)
-    except HTTPException:
-        target.unlink(missing_ok=True)
-        raise
+    src.seek(0)
+    with open(target, "wb") as fh:
+        while chunk := src.read(1 << 20):
+            size += len(chunk)
+            if size > limit_bytes:
+                raise HTTPException(
+                    status_code=413, detail=f"file '{name}' exceeds the upload limit"
+                )
+            fh.write(chunk)
     return size
 
 
@@ -320,20 +355,31 @@ async def create_job(request: Request) -> dict:
     content_type = request.headers.get("content-type", "")
 
     if content_type.startswith("application/json"):
-        body = PathJobBody.model_validate(await request.json())
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="request body is not valid JSON") from None
+        try:
+            body = PathJobBody.model_validate(payload)
+        except ValidationError as exc:  # same 422 shape FastAPI gives typed bodies
+            raise RequestValidationError(exc.errors(include_url=False)) from None
         recipe = _resolve_recipe(request, body.recipe)
+        webhook_url = _webhook_or_400(body.webhook_url)
         paths = [Path(p).expanduser() for p in body.paths]
         missing = [str(p) for p in paths if not p.exists()]
         if missing:
             raise HTTPException(
                 status_code=400, detail=f"path(s) not found: {', '.join(missing[:5])}"
             )
-        files, skipped = queue.collect_input_files(paths, recipe)
         output_dir = Path(body.output_dir).expanduser() if body.output_dir else None
+        # an output folder inside an input folder must not feed earlier results back in
+        files, skipped = queue.collect_input_files(
+            paths, recipe, exclude_dirs=(output_dir,) if output_dir else ()
+        )
         try:
             job = queue.submit(
                 recipe, files, source="api", output_dir=output_dir,
-                webhook_url=body.webhook_url, skipped=skipped,
+                webhook_url=webhook_url, skipped=skipped,
                 user_id=actor_of(request).user_id,
                 priority=_clamp_priority(request, body.priority),
             )
@@ -341,7 +387,7 @@ async def create_job(request: Request) -> dict:
             raise _error(exc) from exc
         return job
 
-    form = await request.form()
+    form = await request.form(max_files=MAX_UPLOAD_FILES, max_fields=MAX_UPLOAD_FILES + 100)
     recipe_name = str(form.get("recipe") or "")
     if not recipe_name:
         raise HTTPException(status_code=400, detail="missing 'recipe' form field")
@@ -349,30 +395,42 @@ async def create_job(request: Request) -> dict:
     uploads = [v for v in form.getlist("files") if isinstance(v, UploadFile)]
     if not uploads:
         raise HTTPException(status_code=400, detail="no files uploaded (field name: 'files')")
-    webhook_url = str(form.get("webhook_url") or "") or None
+    webhook_url = _webhook_or_400(str(form.get("webhook_url") or ""))
 
     job_id = new_job_id()
-    in_dir = settings.jobs_dir / job_id / "in"
+    job_dir = settings.jobs_dir / job_id
     limit = settings.max_upload_mb * 1024 * 1024
     saved: list[Path] = []
-    for i, upload in enumerate(uploads):
-        raw_name = Path(upload.filename or f"upload-{i}").name
-        clean = _SAFE_NAME_RE.sub("-", raw_name).strip(" .-") or f"upload-{i}"
-        # per-index subdir keeps duplicate upload names apart without renaming them
-        target = in_dir / f"{i:04d}" / clean
-        await _save_upload(upload, target, limit)
-        saved.append(target)
-
-    files, skipped = queue.collect_input_files(saved, recipe)
     try:
+        for i, upload in enumerate(uploads):
+            # Unicode names survive (商品.jpg, сумка.jpg): they become {original}
+            clean = safe_upload_name(upload.filename or "", f"upload-{i}")
+            # per-index subdir keeps duplicate upload names apart without renaming them
+            target = job_dir / "in" / f"{i:04d}" / clean
+            await asyncio.to_thread(_copy_upload, upload.file, target, limit, clean)
+            saved.append(target)
+        files, skipped = queue.collect_input_files(saved, recipe)
         job = queue.submit_with_id(
             job_id, recipe, files, source="api", webhook_url=webhook_url, skipped=skipped,
             user_id=actor_of(request).user_id,
             priority=_clamp_priority(request, form.get("priority")),
         )
-    except BatchroomError as exc:
-        raise _error(exc) from exc
+    except BaseException as exc:
+        # nothing was queued: don't leave the uploaded copies behind
+        if not _job_exists(queue, job_id):
+            shutil.rmtree(job_dir, ignore_errors=True)
+        if isinstance(exc, BatchroomError):
+            raise _error(exc) from exc
+        raise
     return job
+
+
+def _job_exists(queue: JobQueue, job_id: str) -> bool:
+    try:
+        queue.get_job(job_id)
+    except Exception:  # not found, or the database is unreachable right now
+        return False
+    return True
 
 
 @router.get("/jobs")
@@ -403,6 +461,28 @@ def cancel_job(request: Request, job_id: str) -> dict:
     _job_or_404(request, job_id)
     try:
         return _queue(request).cancel(job_id)
+    except JobError as exc:
+        raise _error(exc, 404) from exc
+
+
+@router.post("/jobs/{job_id}/retry")
+def retry_job(request: Request, job_id: str) -> dict:
+    """Re-queue a finished job's failed/cancelled items (e.g. after fixing
+    the recipe or the network); done items are kept as they are."""
+    _job_or_404(request, job_id)
+    try:
+        return _queue(request).retry(job_id)
+    except JobError as exc:
+        raise _error(exc, 404 if "not found" in exc.message else 409) from exc
+
+
+@router.get("/jobs/{job_id}/manifest")
+def job_manifest(request: Request, job_id: str) -> dict:
+    """This job's manifest, rebuilt from the queue database (also while it
+    runs, and when several jobs share one output folder)."""
+    _job_or_404(request, job_id)
+    try:
+        return _queue(request).manifest_for(job_id)
     except JobError as exc:
         raise _error(exc, 404) from exc
 
@@ -460,29 +540,43 @@ def job_output(request: Request, job_id: str, relpath: str) -> FileResponse:
 
 
 @router.get("/jobs/{job_id}/archive")
-def job_archive(request: Request, job_id: str) -> FileResponse:
+def job_archive(request: Request, job_id: str) -> StreamingResponse:
+    """ZIP of this job's own outputs (+ its manifest), streamed as it's built.
+
+    Only files recorded for this job are included: a path/watch job writing
+    into a shared folder must not hand out everything else in that folder."""
     job = _job_or_404(request, job_id)
     if job["status"] not in ("done", "cancelled"):
         raise HTTPException(status_code=409, detail="job is still running")
+    queue = _queue(request)
     out_dir = Path(job["output_dir"]).resolve()
-    if not out_dir.is_dir():
-        raise HTTPException(status_code=404, detail="output directory missing")
-    settings = _settings(request)
-    archive_dir = settings.tmp_dir / "archives"
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    archive = archive_dir / f"{job_id}.zip"
-    manifest = out_dir / "manifest.json"
-    stale = not archive.is_file() or (
-        manifest.is_file() and manifest.stat().st_mtime > archive.stat().st_mtime
+    entries: dict[str, Path | bytes] = {}
+    for item in queue.get_items(job_id):
+        for output in (item.get("result") or {}).get("outputs", []):
+            relpath = str(output.get("path", ""))
+            candidate = (out_dir / relpath).resolve()
+            if relpath and candidate.is_relative_to(out_dir) and candidate.is_file():
+                entries[relpath] = candidate
+    if queue.wants_manifest_file(job["recipe"]) and MANIFEST_NAME not in entries:
+        entries[MANIFEST_NAME] = _manifest_bytes(queue, job_id, out_dir / MANIFEST_NAME)
+    filename = f"batchroom-{job_id}.zip"
+    return StreamingResponse(
+        stream_zip(sorted(entries.items())),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-    if stale:
-        tmp = archive.with_suffix(".zip.part")
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-            for path in sorted(out_dir.rglob("*")):
-                if path.is_file() and not path.name.endswith(".part"):
-                    zf.write(path, path.relative_to(out_dir).as_posix())
-        tmp.replace(archive)
-    return FileResponse(archive, filename=f"batchroom-{job_id}.zip")
+
+
+def _manifest_bytes(queue: JobQueue, job_id: str, on_disk: Path) -> bytes:
+    """The manifest file as integrations saw it when it belongs to this job;
+    rebuilt from the database when another job's run overwrote it."""
+    try:
+        raw = on_disk.read_bytes()
+        if json.loads(raw).get("job_id") == job_id:
+            return raw
+    except (OSError, ValueError, AttributeError):
+        pass
+    return json.dumps(queue.manifest_for(job_id), indent=2, ensure_ascii=False).encode("utf-8")
 
 
 # ---------------------------------------------------------------------------

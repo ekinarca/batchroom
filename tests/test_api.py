@@ -1,11 +1,13 @@
 """API surface tests via the FastAPI TestClient (full lifespan)."""
 
+import io
 import time
+import zipfile
 
 import pytest
 from fastapi.testclient import TestClient
 
-from batchroom.core.image_io import encode_image
+from batchroom.core.image_io import encode_image, save_image
 from batchroom.server import create_app
 
 from .conftest import gradient_image
@@ -157,6 +159,96 @@ class TestJobFlow:
         assert any(j["id"] == job["id"] for j in client.get("/api/jobs").json()["jobs"])
         assert client.delete(f"/api/jobs/{job['id']}").status_code == 200
         assert client.get(f"/api/jobs/{job['id']}").status_code == 404
+
+
+class TestHardening:
+    def test_json_mode_bad_bodies_are_client_errors(self, client):
+        # used to be 500s: a validation error raised inside the handler
+        assert client.post("/api/jobs", json={"recipe": "steam-capsule-pack"}).status_code == 422
+        bad = client.post("/api/jobs", content=b"{nope", headers={"Content-Type": "application/json"})
+        assert bad.status_code == 400
+
+    def test_rejected_upload_leaves_nothing_behind(self, client, settings):
+        r = client.post(
+            "/api/jobs", data={"recipe": "steam-capsule-pack"},
+            files=[("files", ("notes.txt", b"hello", "text/plain"))],
+        )
+        assert r.status_code == 400
+        assert list(settings.jobs_dir.iterdir()) == []
+
+    def test_oversize_upload_leaves_nothing_behind(self, settings):
+        settings.max_upload_mb = 1
+        with TestClient(create_app(settings)) as c:
+            r = c.post(
+                "/api/jobs", data={"recipe": "steam-capsule-pack"},
+                files=[("files", ("ok.jpg", upload_bytes(), "image/jpeg")),
+                       ("files", ("big.jpg", b"x" * (1024 * 1024 + 1), "image/jpeg"))],
+            )
+            assert r.status_code == 413
+        assert list(settings.jobs_dir.iterdir()) == []
+
+    def test_unicode_upload_names_survive(self, client):
+        # non-Latin names were reduced to "jpg" and skipped as unsupported
+        r = client.post(
+            "/api/jobs", data={"recipe": "steam-capsule-pack"},
+            files=[("files", ("商品.jpg", upload_bytes(), "image/jpeg"))],
+        )
+        assert r.status_code == 202
+        job = wait_done(client, r.json()["id"])
+        path = job["items"][0]["result"]["outputs"][0]["path"]
+        assert path == "main-capsule/商品-main-capsule.png"
+        assert client.get(f"/api/jobs/{job['id']}/outputs/{path}").status_code == 200
+
+    def test_webhook_url_must_be_http(self, client):
+        r = client.post(
+            "/api/jobs", data={"recipe": "steam-capsule-pack", "webhook_url": "ftp://example.com/x"},
+            files=[("files", ("a.jpg", upload_bytes(), "image/jpeg"))],
+        )
+        assert r.status_code == 400
+
+    def test_archive_holds_only_this_jobs_files(self, client, tmp_path):
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        (shared / "unrelated.txt").write_text("someone else's file")
+        src = tmp_path / "art.png"
+        save_image(gradient_image(48, 48), src, "png")
+        r = client.post("/api/jobs", json={
+            "recipe": "steam-capsule-pack", "paths": [str(src)], "output_dir": str(shared),
+        })
+        job = wait_done(client, r.json()["id"])
+        archive = client.get(f"/api/jobs/{job['id']}/archive")
+        assert archive.status_code == 200
+        names = zipfile.ZipFile(io.BytesIO(archive.content)).namelist()
+        assert "unrelated.txt" not in names
+        assert "manifest.json" in names and len(names) == 7  # 6 capsules + manifest
+
+    def test_manifest_and_retry_endpoints(self, client):
+        r = client.post(
+            "/api/jobs", data={"recipe": "steam-capsule-pack"},
+            files=[("files", ("a.jpg", upload_bytes(), "image/jpeg")),
+                   ("files", ("b.jpg", b"not really a jpeg", "image/jpeg"))],
+        )
+        job = wait_done(client, r.json()["id"])
+        manifest = client.get(f"/api/jobs/{job['id']}/manifest").json()
+        assert manifest["job_id"] == job["id"]
+        assert manifest["counts"] == {"total": 2, "done": 1, "failed": 1, "cancelled": 0}
+        again = client.post(f"/api/jobs/{job['id']}/retry")
+        assert again.status_code == 200 and again.json()["failed"] == 0
+        job = wait_done(client, job["id"])
+        assert (job["done"], job["failed"]) == (1, 1)  # still broken, but it ran again
+        assert client.post("/api/jobs/j-nope/retry").status_code == 404
+
+    def test_editing_a_hand_dropped_recipe_updates_its_file(self, client, settings):
+        dropped = settings.recipes_dir / "my-file.yaml"
+        dropped.write_text("name: foo-r\nsteps:\n  - op: trim\n", encoding="utf-8")
+        text = "name: foo-r\ndescription: edited\nsteps:\n  - op: trim\n"
+        assert client.post("/api/recipes", json={"text": text}).status_code == 201
+        # a new foo-r.yaml would have been shadowed by my-file.yaml
+        assert client.get("/api/recipes/foo-r").json()["description"] == "edited"
+        assert dropped.read_text(encoding="utf-8") == text
+        assert not (settings.recipes_dir / "foo-r.yaml").exists()
+        assert client.delete("/api/recipes/foo-r").status_code == 200
+        assert not dropped.exists()
 
 
 class TestAuth:

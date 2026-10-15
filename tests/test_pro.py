@@ -58,6 +58,16 @@ def _register_test_pubkey(monkeypatch):
     monkeypatch.setitem(license_mod.PUBLIC_KEYS, TEST_KEY_ID, _PUBLIC_HEX)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_login_limits():
+    """The login limiters are process-wide; isolate tests from each other."""
+    from batchroom.api import auth
+
+    auth._login_limiter.buckets.clear()
+    auth._source_limiter.buckets.clear()
+    yield
+
+
 @pytest.fixture()
 def licensed_settings(settings):
     save_license(settings, issue_key())
@@ -221,6 +231,28 @@ class TestAuthFlows:
             assert statuses[:5] == [401] * 5
             assert statuses[5] == 429  # rate limited
 
+    def test_spraying_emails_hits_the_source_limit(self, licensed_settings):
+        db = Database(licensed_settings.db_path)
+        create_user(db, email="solo@co.example", password="admin-pass-1", role="admin")
+        with TestClient(create_app(licensed_settings)) as c:
+            codes = [
+                c.post("/api/auth/login",
+                       json={"email": f"x{i}@co.example", "password": "nope-nope"}).status_code
+                for i in range(31)
+            ]
+        assert codes[:30] == [401] * 30 and codes[30] == 429
+
+    def test_limiter_not_reset_by_spraying_keys(self):
+        from batchroom.api.auth import _RateLimiter
+
+        limiter = _RateLimiter()
+        for _ in range(5):
+            limiter.hit("1.2.3.4:admin@co.example")
+        assert limiter.blocked("1.2.3.4:admin@co.example")
+        for i in range(1001):  # the old table was wiped once it held 1000 keys
+            limiter.hit(f"1.2.3.4:spray{i}@co.example")
+        assert limiter.blocked("1.2.3.4:admin@co.example")
+
     def test_member_job_isolation(self, multiuser_client):
         c = multiuser_client
         login(c, "member@co.example", "member-pass-1")
@@ -248,7 +280,7 @@ class TestAuthFlows:
         login(c, "member@co.example", "member-pass-1")
         assert c.get("/api/users").status_code == 403
         assert c.post("/api/license", json={"key": issue_key()}).status_code == 403
-        assert c.post("/api/models/u2netp/pull").status_code == 403 or True  # models open to members
+        assert c.delete("/api/models/u2netp").status_code == 403  # shared weights: admins only
         # members may still browse recipes/models
         assert c.get("/api/recipes").status_code == 200
         assert c.get("/api/models").status_code == 200
