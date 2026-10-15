@@ -145,3 +145,35 @@ class TestMattingMath:
         mid = w // 2
         # after filtering, the transition should be steeper around the edge
         assert (out[10, mid + 3] - out[10, mid - 3]) > (src[10, mid + 3] - src[10, mid - 3]) * 1.5
+
+
+class TestSessionCache:
+    def test_concurrent_first_use_loads_the_model_once(self, settings, stub_model, monkeypatch):
+        import threading
+        import time
+
+        import onnxruntime as ort
+
+        from batchroom.models.manager import ModelManager
+
+        created = []
+        real = ort.InferenceSession
+
+        def counting(*args, **kwargs):
+            created.append(1)
+            time.sleep(0.1)  # widen the race window
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(ort, "InferenceSession", counting)
+        manager = ModelManager(settings.models_dir)
+        sessions = []
+        threads = [
+            threading.Thread(target=lambda: sessions.append(manager.session(stub_model)))
+            for _ in range(4)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert len(created) == 1  # every worker asking at batch start shares one copy
+        assert len({id(s) for s in sessions}) == 1

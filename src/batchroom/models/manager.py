@@ -47,6 +47,7 @@ class ModelManager:
         self._sessions: dict[str, object] = {}
         self._lock = threading.Lock()
         self._download_locks: dict[str, threading.Lock] = {}
+        self._load_locks: dict[str, threading.Lock] = {}
 
     # ---- paths & lockfile ----------------------------------------------
     def path_for(self, model_id: str) -> Path:
@@ -228,11 +229,24 @@ class ModelManager:
 
     # ---- ONNX sessions ----------------------------------------------------
     def session(self, model_id: str):
-        """Shared onnxruntime session (InferenceSession.run is thread-safe)."""
+        """Shared onnxruntime session (InferenceSession.run is thread-safe).
+
+        Loading is serialized per model: when a batch starts, every worker
+        asks at once, and each would otherwise build its own copy of a
+        100-200 MB network before the cache settles."""
         with self._lock:
             cached = self._sessions.get(model_id)
-        if cached is not None:
-            return cached
+            if cached is not None:
+                return cached
+            load_lock = self._load_locks.setdefault(model_id, threading.Lock())
+        with load_lock:
+            with self._lock:
+                cached = self._sessions.get(model_id)
+            if cached is not None:
+                return cached
+            return self._load_session(model_id)
+
+    def _load_session(self, model_id: str):
         path = self.path_for(model_id)
         if not path.is_file():
             raise ModelError(
@@ -246,6 +260,14 @@ class ModelManager:
             if self.onnx_threads > 0:
                 opts.intra_op_num_threads = self.onnx_threads
             opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            # ORT's CPU arena never hands memory back. Measured on a 1200x896
+            # photo with 4 workers: an isnet-general session kept ~3.6 GB with
+            # it, ~0.5 GB without, at equal or better throughput — and with it,
+            # running each background model once OOM-killed a 16 GB box. Tiled
+            # upscaling repeats one tile shape, where the arena's reuse is ~30%
+            # faster for a bounded ~1 GB, so it keeps it.
+            spec = get_spec(model_id)
+            opts.enable_cpu_mem_arena = bool(spec and spec.task == "upscale")
             session = ort.InferenceSession(
                 str(path), sess_options=opts, providers=["CPUExecutionProvider"]
             )
