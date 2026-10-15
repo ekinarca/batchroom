@@ -40,10 +40,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # After the push, so the page never advertises an image that isn't there.
+      # A page published by hand first ("Draft a new release" on GitHub, which
+      # also creates the tag) is kept; only empty notes are filled in.
       - name: GitHub release page (notes from CHANGELOG.md)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/release_notes.py "$GITHUB_REF_NAME" "ghcr.io/$GITHUB_REPOSITORY" > notes.md
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "Batchroom ${GITHUB_REF_NAME#v}" --notes-file notes.md --verify-tag
+          if body=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body --jq .body); then
+            if [ -n "$body" ]; then
+              echo "release $GITHUB_REF_NAME already has notes; keeping them"
+            else
+              gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "Batchroom ${GITHUB_REF_NAME#v}" --notes-file notes.md --verify-tag
+          fi
