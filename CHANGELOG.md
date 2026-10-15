@@ -54,6 +54,9 @@ SECURITY.md).
   majors of `actions/checkout` / `actions/setup-python` (GitHub removed
   Node 20 from its runners).
 - Dev extra: `httpx2`, which Starlette ≥ 1.0's TestClient runs on.
+- Pushing a `vX.Y.Z` tag now also publishes the GitHub release page,
+  with that version's CHANGELOG section as its notes
+  (`scripts/release_notes.py`).
 
 ### Fixed
 
