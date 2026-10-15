@@ -220,6 +220,8 @@ def load_image_bytes(data: bytes, *, name: str = "upload") -> ImageData:
             source_format = (pil.format or "png").lower()
             if source_format == "jpeg":
                 source_format = "jpg"
+            if source_format == "heif":
+                source_format = "heic"
             oriented = ImageOps.exif_transpose(pil) or pil
             icc = oriented.info.get("icc_profile") or None
             exif = oriented.info.get("exif") or None
