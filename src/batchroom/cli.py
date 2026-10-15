@@ -56,6 +56,7 @@ def cmd_serve(args) -> int:
 
 def cmd_run(args) -> int:
     from .core.image_io import READ_EXTENSIONS
+    from .core.inputs import is_hidden_file_name, walk_files
     from .core.manifest import build_manifest, utc_now_iso, write_manifest
     from .core.pipeline import JobNames, process_item
     from .core.recipe import discover_recipes, load_recipe_file, recipe_dirs
@@ -76,12 +77,14 @@ def cmd_run(args) -> int:
             return 1
         recipe = recipes[recipe_ref]
 
+    out_dir = Path(args.output).expanduser()
     files: list[Path] = []
     skipped = 0
     for raw in args.inputs:
         path = Path(raw).expanduser()
         if path.is_dir():
-            candidates = sorted(p for p in path.rglob("*") if p.is_file())
+            # -o inside an input folder: a re-run must not eat its own results
+            candidates = list(walk_files(path, exclude_dirs=(out_dir,)))
         elif path.is_file():
             candidates = [path]
         else:
@@ -89,7 +92,7 @@ def cmd_run(args) -> int:
             return 1
         for candidate in candidates:
             ext = candidate.suffix.lower()
-            if candidate.name.startswith(".") or ext not in READ_EXTENSIONS:
+            if is_hidden_file_name(candidate.name) or ext not in READ_EXTENSIONS:
                 skipped += 1
                 continue
             if not recipe.accepts_extension(ext):
@@ -100,7 +103,6 @@ def cmd_run(args) -> int:
         print("error: no processable input files", file=sys.stderr)
         return 1
 
-    out_dir = Path(args.output).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
     models = ModelManager(settings.models_dir, onnx_threads=settings.onnx_threads)
 
@@ -447,6 +449,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         return args.func(args)
+    except BatchroomError as exc:  # e.g. a malformed BATCHROOM_* variable
+        print(f"error: {exc}" + (f"\n  hint: {exc.hint}" if exc.hint else ""), file=sys.stderr)
+        return 1
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130

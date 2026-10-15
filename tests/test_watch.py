@@ -130,3 +130,45 @@ class TestPickup:
             await asyncio.sleep(0.05)
         watcher._check_active_jobs()
         assert (hot / "failed" / "broken.png").is_file()
+
+
+class TestNasSafety:
+    async def test_system_folders_never_ingested(self, watch_env):
+        watcher, queue, hot, out = watch_env
+        # Synology's indexer thumbnails, recycle bins, desktop trash
+        for rel in ("@eaDir/x.png/SYNOPHOTO_THUMB_XL.png", "#recycle/old.png",
+                    ".Trash-1000/files/gone.png", "sub/@eaDir/y.png"):
+            path = hot / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            save_image(gradient_image(8, 8), path, "png")
+        save_image(gradient_image(8, 8), hot / "sub" / "real.png", "png")
+        candidates = [p.relative_to(hot).as_posix() for p in watcher._candidates(watcher.entries[0])]
+        assert candidates == ["sub/real.png"]
+
+    async def test_vanished_files_are_forgotten(self, watch_env):
+        watcher, queue, hot, out = watch_env
+        blip = hot / "blip.png"
+        save_image(gradient_image(8, 8), blip, "png")
+        watcher._scan_all()
+        assert blip in watcher._snapshots
+        blip.unlink()  # deleted before it ever became stable
+        watcher._scan_all()
+        assert blip not in watcher._snapshots
+
+    def test_output_containing_the_folder_rejected(self, settings, tmp_path):
+        hot = tmp_path / "share" / "in"
+        hot.mkdir(parents=True)
+        settings.watch_config_path.write_text(
+            f"watch:\n  - folder: {hot}\n    recipe: watch-pack\n    output: {hot.parent}\n",
+            encoding="utf-8",
+        )
+
+        class _Queue:  # reload_config only needs the recipe names
+            @staticmethod
+            def recipes_provider():
+                return {"watch-pack": object()}
+
+        watcher = Watcher(settings, _Queue())
+        watcher.reload_config()
+        assert watcher.entries == []
+        assert any("output must not contain" in p for p in watcher.problems)

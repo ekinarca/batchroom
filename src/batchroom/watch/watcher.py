@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -37,6 +38,7 @@ import yaml
 from ..config import Settings
 from ..core.errors import BatchroomError, JobError
 from ..core.image_io import READ_EXTENSIONS
+from ..core.inputs import walk_files
 from ..queue.jobs import JobQueue
 
 log = logging.getLogger("batchroom.watch")
@@ -142,11 +144,15 @@ class Watcher:
             log.warning("watch config: %s", problem)
         recipes = self.queue.recipes_provider()
         for entry in list(self.entries):
+            problem = None
             if entry.recipe not in recipes:
-                self.problems.append(
-                    f"watch folder {entry.folder}: unknown recipe '{entry.recipe}'"
-                )
-                log.warning("watch folder %s: unknown recipe '%s'", entry.folder, entry.recipe)
+                problem = f"watch folder {entry.folder}: unknown recipe '{entry.recipe}'"
+            elif _contains(entry.output, entry.folder):
+                # every file would count as one of our own outputs
+                problem = f"watch folder {entry.folder}: output must not contain the folder"
+            if problem:
+                self.problems.append(problem)
+                log.warning("%s", problem)
                 self.entries.remove(entry)
 
     def status(self) -> dict:
@@ -193,22 +199,26 @@ class Watcher:
     async def _loop(self) -> None:
         while self._running:
             try:
-                self._scan_all()
-                self._check_active_jobs()
+                # walking big SMB/NFS trees can take seconds: keep it off the event loop
+                await asyncio.to_thread(self._tick)
             except Exception:  # pragma: no cover - defensive
                 log.exception("watcher scan failed")
             await asyncio.sleep(self.settings.watch_poll_seconds)
 
+    def _tick(self) -> None:
+        self._scan_all()
+        self._check_active_jobs()
+
     # ------------------------------------------------------------------
     def _scan_all(self) -> None:
-        import time
-
         now = time.time()
-        for entry in self.entries:
+        seen: set[Path] = set()
+        for entry in list(self.entries):  # reload_config may swap the list meanwhile
             if not entry.folder.is_dir():
                 continue
             ready: list[Path] = []
             for path in self._candidates(entry):
+                seen.add(path)
                 try:
                     stat = path.stat()
                 except OSError:
@@ -228,25 +238,23 @@ class Watcher:
                 self._submit(entry, ready)
                 for path in ready:
                     self._snapshots.pop(path, None)
+        # forget files that vanished before they ever became stable
+        for path in [p for p in self._snapshots if p not in seen]:
+            del self._snapshots[path]
 
     def _candidates(self, entry: WatchEntry):
-        output_resolved = entry.output.resolve()
-        for path in sorted(entry.folder.rglob("*")):
-            if not path.is_file():
-                continue
-            if path.name.startswith(".") or path.name.endswith(".part"):
-                continue
-            relative = path.relative_to(entry.folder)
-            head = relative.parts[0] if relative.parts else ""
-            if head in _RESERVED:
-                continue
-            try:
-                if path.resolve().is_relative_to(output_resolved):
-                    continue  # never re-ingest our own outputs
-            except OSError:
+        if _contains(entry.output, entry.folder):
+            return  # misconfigured (see reload_config): everything would be an output
+        # Our own outputs, the done/failed/.intake folders, hidden and NAS
+        # system folders (@eaDir thumbnails, #recycle...) are pruned, not walked.
+        reserved = [entry.folder / name for name in _RESERVED]
+        for path in walk_files(entry.folder, exclude_dirs=(entry.output, *reserved)):
+            if path.name.endswith(".part"):
                 continue
             if path.suffix.lower() not in READ_EXTENSIONS:
                 continue
+            if path.is_symlink() and _contains(entry.output, path):
+                continue  # a link to one of our own outputs
             yield path
 
     def _submit(self, entry: WatchEntry, files: list[Path], reuse_dir: Path | None = None) -> None:
@@ -349,3 +357,10 @@ class Watcher:
             intake.rmdir()
         except OSError:
             pass
+
+
+def _contains(outer: Path, inner: Path) -> bool:
+    try:
+        return inner.resolve().is_relative_to(outer.resolve())
+    except OSError:
+        return False
