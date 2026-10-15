@@ -179,6 +179,7 @@ class PresetPackOp(Op):
         for preset in params.presets:
             ctx.cancel_check()
             tw, th = imaging.parse_size(preset.size)
+            imaging.check_output_size(tw, th, op=self.name)
             background = preset.resolved_background()
             fitted = imaging.resize_to_box(
                 state.image.pixels,

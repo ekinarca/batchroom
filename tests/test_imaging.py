@@ -16,6 +16,18 @@ class TestParsers:
         with pytest.raises(OpError):
             imaging.parse_size("axb")
 
+    def test_size_bounds(self):
+        # a typo must fail at validation, not by exhausting memory mid-batch
+        assert imaging.parse_size("20000x1") == (20000, 1)
+        for bad in ("0x100", "100x0", "100000x100000", [None, 3], ["a", 2], {"width": -1, "height": 5}):
+            with pytest.raises(OpError):
+                imaging.parse_size(bad)
+
+    def test_output_size_guard(self):
+        imaging.check_output_size(15000, 15000, op="resize")  # 225 MP: allowed
+        with pytest.raises(OpError, match="safety limit"):
+            imaging.check_output_size(20000, 20000, op="resize")
+
     def test_color(self):
         assert imaging.parse_color("#FFFFFF") == (255, 255, 255, 255)
         assert imaging.parse_color("#fff") == (255, 255, 255, 255)
@@ -33,6 +45,10 @@ class TestParsers:
         assert imaging.parse_padding(16) == (16.0, "px")
         with pytest.raises(OpError):
             imaging.parse_padding("large")
+        for bad in (-20, "50%", "75%", 999999):
+            with pytest.raises(OpError):
+                imaging.parse_padding(bad)
+        assert imaging.parse_padding("49.5%") == (49.5, "pct")
 
     def test_aspect(self):
         assert imaging.parse_aspect("1:1") == (1, 1)

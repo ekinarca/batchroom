@@ -76,6 +76,16 @@ class TestParsing:
                 "      - { name: a, size: 10x10, format: jpg, background: transparent }\n"
             )
 
+    def test_degenerate_geometry_rejected_at_load(self):
+        for step in (
+            "  - op: resize\n    size: 100000x100000\n",
+            "  - op: composite\n    padding: -20\n",
+            "  - op: preset-pack\n    presets:\n      - { name: a, size: [null, 3] }\n",
+            "  - op: preset-pack\n    presets:\n      - { name: a, size: 100x100, padding: 60% }\n",
+        ):
+            with pytest.raises(RecipeError, match="step 1"):
+                load_recipe_text(f"name: geo\nsteps:\n{step}")
+
     def test_empty_steps(self):
         with pytest.raises(RecipeError, match="steps"):
             load_recipe_text("name: x-y\nsteps: []\n")

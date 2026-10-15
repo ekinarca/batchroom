@@ -16,7 +16,7 @@ from ..core.errors import ModelError, OpError
 from ..models.registry import CATALOG, get_spec
 from .base import ItemState, Op, OpParams, PipelineContext, register
 
-_MAX_OUTPUT_PIXELS = 240_000_000  # ~240MP result guard
+_MAX_OUTPUT_PIXELS = imaging.MAX_OUTPUT_PIXELS  # ~240MP result guard
 
 
 class UpscaleParams(OpParams):

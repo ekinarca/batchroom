@@ -26,19 +26,46 @@ _SIZE_RE = re.compile(r"^\s*(\d+)\s*[xX×]\s*(\d+)\s*$")
 _PCT_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*%\s*$")
 _PX_RE = re.compile(r"^\s*(\d+)\s*(?:px)?\s*$")
 
+# Output geometry limits. A typo like 100000x100000 must fail when the recipe
+# is validated, not by exhausting the server's memory mid-batch (an RGBA
+# float resample of 240 MP already needs ~4 GB).
+MAX_SIDE = 20000
+MAX_OUTPUT_PIXELS = 240_000_000
+
+
+def _checked_size(width, height, raw) -> tuple[int, int]:
+    try:
+        w, h = int(width), int(height)
+    except (TypeError, ValueError):
+        raise OpError(f"invalid size {raw!r}") from None
+    if not (1 <= w <= MAX_SIDE and 1 <= h <= MAX_SIDE):
+        raise OpError(f"invalid size {raw!r}: each side must be 1-{MAX_SIDE} px")
+    return w, h
+
 
 def parse_size(value: str | list | tuple | dict) -> tuple[int, int]:
     """Accept '2000x2000', [2000, 2000] or {width, height}."""
     if isinstance(value, str):
         m = _SIZE_RE.match(value)
         if m:
-            return int(m.group(1)), int(m.group(2))
+            return _checked_size(m.group(1), m.group(2), value)
         raise OpError(f"invalid size '{value}', expected 'WIDTHxHEIGHT' like '2000x2000'")
     if isinstance(value, (list, tuple)) and len(value) == 2:
-        return int(value[0]), int(value[1])
+        return _checked_size(value[0], value[1], value)
     if isinstance(value, dict) and "width" in value and "height" in value:
-        return int(value["width"]), int(value["height"])
+        return _checked_size(value["width"], value["height"], value)
     raise OpError(f"invalid size {value!r}")
+
+
+def check_output_size(width: int, height: int, *, op: str) -> None:
+    """Refuse results too large to process safely (per item, clean error)."""
+    if width * height > MAX_OUTPUT_PIXELS:
+        raise OpError(
+            f"result {width}x{height} exceeds the "
+            f"{MAX_OUTPUT_PIXELS // 1_000_000} MP safety limit",
+            op=op,
+            hint="use a smaller target size or scale",
+        )
 
 
 def parse_color(value: str) -> tuple[int, int, int, int]:
@@ -64,17 +91,29 @@ def parse_color(value: str) -> tuple[int, int, int, int]:
 
 
 def parse_padding(value: str | int | float) -> tuple[float, str]:
-    """Return (amount, unit) where unit is 'pct' or 'px'."""
+    """Return (amount, unit) where unit is 'pct' or 'px'.
+
+    Percentages apply to each side, so they must stay below 50% to leave
+    room for the content; pixel padding is capped like any output side."""
+    amount: float | None = None
+    unit = "px"
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value), "px"
-    if isinstance(value, str):
+        amount = float(value)
+    elif isinstance(value, str):
         m = _PCT_RE.match(value)
         if m:
-            return float(m.group(1)), "pct"
-        m = _PX_RE.match(value)
-        if m:
-            return float(m.group(1)), "px"
-    raise OpError(f"invalid padding '{value}', use e.g. '8%' or '32px'")
+            amount, unit = float(m.group(1)), "pct"
+        else:
+            m = _PX_RE.match(value)
+            if m:
+                amount = float(m.group(1))
+    if amount is None:
+        raise OpError(f"invalid padding '{value}', use e.g. '8%' or '32px'")
+    if unit == "pct" and not 0 <= amount < 50:
+        raise OpError(f"invalid padding '{value}': percentage must be 0 to under 50%")
+    if unit == "px" and not 0 <= amount <= MAX_SIDE:
+        raise OpError(f"invalid padding '{value}': pixels must be 0-{MAX_SIDE}")
+    return amount, unit
 
 
 def parse_aspect(value: str) -> tuple[int, int] | None:

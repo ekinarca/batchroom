@@ -47,6 +47,7 @@ class ResizeOp(Op):
         w, h = img.width, img.height
         if params.scale is not None:
             tw, th = max(1, round(w * params.scale)), max(1, round(h * params.scale))
+            imaging.check_output_size(tw, th, op=self.name)
             state.image = img.with_pixels(
                 imaging.resize_rgba(img.pixels, tw, th), f"resize x{params.scale}"
             )
@@ -61,6 +62,7 @@ class ResizeOp(Op):
             tw, th = max(1, round(w * params.height / h)), params.height
         else:  # pragma: no cover - validator prevents
             raise OpError("no resize target", op=self.name)
+        imaging.check_output_size(tw, th, op=self.name)
         out = imaging.resize_to_box(
             img.pixels,
             tw,
@@ -141,6 +143,7 @@ class CompositeOp(Op):
             canvas_w = max(1, round(ar_w * scale))
             canvas_h = max(1, round(ar_h * scale))
 
+        imaging.check_output_size(canvas_w, canvas_h, op=self.name)
         background = imaging.parse_color(params.background)
         out = imaging.place_on_canvas(pixels, canvas_w, canvas_h, background)
         state.image = ImageData(
