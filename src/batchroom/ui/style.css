@@ -200,6 +200,11 @@ hr.sep { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
   color: var(--ink-dim); font-size: 11px; line-height: 1; cursor: pointer;
 }
 .filecard .rm:hover { color: var(--sig); border-color: var(--sig); }
+.filecard.more {
+  height: 84px; display: grid; place-items: center;
+  border: 1px dashed var(--line-strong); border-radius: var(--radius-s);
+  color: var(--ink-dim); font-family: var(--mono); font-size: 12px;
+}
 
 /* ---------- progress ---------- */
 .bar {
@@ -210,6 +215,7 @@ hr.sep { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .bar > i { display: block; height: 100%; }
 .bar .b-done { background: var(--ok); }
 .bar .b-failed { background: var(--sig); }
+.bar .b-cancelled { background: var(--line-strong); }
 .bar .b-run { background: var(--warn); animation: shimmer 1.2s linear infinite; }
 @keyframes shimmer { 50% { opacity: .55; } }
 
@@ -232,7 +238,16 @@ table.items tr:last-child td { border-bottom: 0; }
   width: 44px; height: 44px; object-fit: cover; border-radius: 6px;
   border: 1px solid var(--line); background: var(--bg-raise-2);
 }
+.thumb-pair img.clickable { cursor: pointer; }
+.thumb-pair .thumb-empty {
+  width: 44px; height: 44px; border-radius: 6px; flex: none;
+  border: 1px dashed var(--line); background: var(--bg);
+}
 .err-text { color: var(--sig-ink); font-size: 12px; }
+.step-text {
+  color: var(--ink-faint); font-family: var(--mono); font-size: 11px; margin-top: 4px;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* before/after compare
    Both layers letterbox into one box (object-fit: contain) so recipes that
@@ -345,7 +360,8 @@ pre.yaml {
   animation: drawerin .18s ease;
 }
 @keyframes drawerin { from { transform: translateX(30px); opacity: 0; } }
-[dir="rtl"] @keyframes drawerin { from { transform: translateX(-30px); } }
+@keyframes drawerin-rtl { from { transform: translateX(-30px); opacity: 0; } }
+[dir="rtl"] .drawer { animation-name: drawerin-rtl; }
 .drawer-back {
   position: fixed; inset: 0; z-index: 39; background: rgba(0, 0, 0, .45);
 }
