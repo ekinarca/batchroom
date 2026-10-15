@@ -22,7 +22,10 @@ const S = {
   selectedRecipe: localStorage.getItem("br_recipe") || "",
   selectedPriority: 0,
   pullProgress: {},   // model id -> pct
+  itemProgress: {},   // "jobId:idx" -> latest step message of a running item
+  missingThumbs: new Set(),  // thumbnail URLs known to 404 (e.g. undecodable inputs)
   es: null,
+  started: false,
 };
 
 const PRO_URL = "https://github.com/ekinarca/batchroom/blob/main/docs/PRO.md";
@@ -76,13 +79,9 @@ async function api(path, opts = {}) {
     throw new Error(t("errors.network"));
   }
   if (res.status === 401) {
-    let login = false;
-    try {
-      const body = await res.clone().json();
-      login = !!(body.detail && body.detail.login_required);
-    } catch { /* header-key mode */ }
-    if (login || (S.me && S.me.multiuser)) showLoginView();
-    else showAuthGate(true);
+    let body = null;
+    try { body = await res.clone().json(); } catch { /* header-key mode */ }
+    handleUnauthorized(body);
     throw new Error(t("auth.invalid"));
   }
   if (!res.ok) {
@@ -96,9 +95,16 @@ async function api(path, opts = {}) {
   const ct = res.headers.get("content-type") || "";
   return ct.includes("application/json") ? res.json() : res;
 }
+function handleUnauthorized(body) {
+  const login = !!(body && body.detail && body.detail.login_required);
+  if (login || (S.me && S.me.multiuser)) showLoginView();
+  else showAuthGate(true);
+}
 function fileUrl(path) {
   return S.apiKey ? `${path}${path.includes("?") ? "&" : "?"}api_key=${encodeURIComponent(S.apiKey)}` : path;
 }
+// output paths may hold any character a filename can ("#1 50% off.png", "商品.jpg")
+const encPath = (p) => p.split("/").map(encodeURIComponent).join("/");
 
 /* ================= toasts & modal ================= */
 function toast(msg, kind = "") {
@@ -106,41 +112,66 @@ function toast(msg, kind = "") {
   $("#toasts").append(el);
   setTimeout(() => el.remove(), 4200);
 }
+/* One modal at a time. A click on the backdrop or Escape closes it, unless
+   it holds work that would be lost (editors, a key shown once); onClose runs
+   exactly once however it closes (resolves pending confirms). */
+let modalCleanup = null;
+let modalDismissable = false;
+function closeModal() {
+  const cleanup = modalCleanup;
+  modalCleanup = null;
+  $("#modal-root").replaceChildren();
+  if (cleanup) cleanup();
+}
+function openModal(dialog, { onClose = null, dismissable = true } = {}) {
+  closeModal();
+  const root = $("#modal-root");
+  const onBackdrop = (e) => { if (e.target === root && modalDismissable) closeModal(); };
+  root.addEventListener("click", onBackdrop);
+  modalDismissable = dismissable;
+  modalCleanup = () => {
+    root.removeEventListener("click", onBackdrop);
+    if (onClose) onClose();
+  };
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  root.replaceChildren(dialog);
+  return dialog;
+}
 function confirmModal(message) {
   return new Promise((resolve) => {
-    const root = $("#modal-root");
-    const close = (val) => { root.replaceChildren(); resolve(val); };
-    root.replaceChildren(
-      h("div", { class: "modal", role: "dialog", "aria-modal": "true" },
+    let answer = false;
+    const ok = h("button", { class: "btn sig", onclick: () => { answer = true; closeModal(); } }, t("common.ok"));
+    openModal(
+      h("div", { class: "modal" },
         h("p", {}, message),
         h("div", { class: "row" },
-          h("button", { class: "btn", onclick: () => close(false) }, t("common.cancel")),
-          h("button", { class: "btn sig", onclick: () => close(true) }, t("common.ok")),
+          h("button", { class: "btn", onclick: closeModal }, t("common.cancel")),
+          ok,
         ),
       ),
+      { onClose: () => resolve(answer) },
     );
-    root.addEventListener("click", (e) => { if (e.target === root) close(false); }, { once: true });
+    ok.focus();
   });
 }
 
 /* ---------- onboarding tour ---------- */
 const TOUR_KEY = "br_tour_v1";
 function showTour() {
-  const root = $("#modal-root");
-  const close = () => root.replaceChildren();
   const step = (n, key) => h("div", { class: "tour-step" },
     h("span", { class: "tour-num" }, String(n)),
     h("p", {}, t(key)));
-  root.replaceChildren(
-    h("div", { class: "modal tour", role: "dialog", "aria-modal": "true" },
+  const cta = h("button", { class: "btn sig", onclick: closeModal }, t("tour.cta"));
+  openModal(
+    h("div", { class: "modal tour" },
       h("h2", {}, t("tour.title")),
       h("p", { class: "sub" }, t("tour.intro")),
       step(1, "tour.step1"), step(2, "tour.step2"), step(3, "tour.step3"),
-      h("div", { class: "row", style: "justify-content:flex-end;margin-top:16px" },
-        h("button", { class: "btn sig", onclick: close }, t("tour.cta"))),
+      h("div", { class: "row", style: "justify-content:flex-end;margin-top:16px" }, cta),
     ),
   );
-  root.addEventListener("click", (e) => { if (e.target === root) close(); }, { once: true });
+  cta.focus();
 }
 function maybeShowTour() {
   if (localStorage.getItem(TOUR_KEY)) return;
@@ -157,7 +188,7 @@ function viewVisible(view) {
 function route() {
   // navigating anywhere dismisses any open drawer/modal (they must never stack)
   document.querySelectorAll(".drawer, .drawer-back").forEach((el) => el.remove());
-  $("#modal-root").replaceChildren();
+  closeModal();
   const hash = location.hash.replace(/^#\/?/, "");
   const [view, arg] = hash.split("/");
   S.view = VIEWS.includes(view) && viewVisible(view) ? view : "process";
@@ -178,7 +209,7 @@ function render() {
   fn(main);
 }
 
-function renderNav() {
+function renderNavLinks() {
   const running = S.jobs.filter((j) => j.status === "running" || j.status === "queued").length;
   $("#nav").replaceChildren(
     ...VIEWS.filter(viewVisible).map((v) =>
@@ -189,6 +220,10 @@ function renderNav() {
       ),
     ),
   );
+}
+
+function renderNav() {
+  renderNavLinks();
   const sel = $("#lang-select");
   sel.replaceChildren(...S.languages.map((l) =>
     h("option", { value: l.code, selected: l.code === S.lang }, l.name)));
@@ -218,20 +253,24 @@ function viewProcess(main) {
     h("option", { value: r.name, selected: r.name === S.selectedRecipe }, `${r.name} — ${r.description}`.slice(0, 90))));
 
   const fileInput = h("input", { type: "file", multiple: true, accept: "image/*,.heic,.avif", hidden: true,
-    onchange: (e) => addFiles([...e.target.files]) });
+    onchange: (e) => { addFiles([...e.target.files]); e.target.value = ""; } });
+  const folderInput = h("input", { type: "file", multiple: true, webkitdirectory: true, hidden: true,
+    onchange: (e) => { addFiles([...e.target.files]); e.target.value = ""; } });
 
   const dz = h("div", { class: "dropzone", tabindex: "0", role: "button",
     onclick: () => fileInput.click(),
-    onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") fileInput.click(); },
+    onkeydown: (e) => { if (e.target === dz && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); fileInput.click(); } },
     ondragover: (e) => { e.preventDefault(); dz.classList.add("drag"); },
     ondragleave: () => dz.classList.remove("drag"),
-    ondrop: (e) => {
+    ondrop: async (e) => {
       e.preventDefault(); dz.classList.remove("drag");
-      addFiles([...e.dataTransfer.files]);
+      addFiles(await filesFromDrop(e.dataTransfer));
     },
   },
     h("div", { class: "hint" }, t("process.drop_hint")),
     h("div", { class: "subhint" }, t("process.drop_sub")),
+    h("button", { type: "button", class: "btn small ghost", style: "margin-top:12px",
+      onclick: (e) => { e.stopPropagation(); folderInput.click(); } }, t("process.choose_folder")),
   );
 
   const cards = h("div", { class: "filecards", id: "filecards" });
@@ -260,7 +299,7 @@ function viewProcess(main) {
       h("div", { class: "row", style: "margin-bottom:14px" },
         h("div", { style: "flex:1;min-width:260px" }, h("label", {}, t("process.recipe_label")), recipeSel),
       ),
-      dz, fileInput, cards,
+      dz, fileInput, folderInput, cards,
       h("hr", { class: "sep" }),
       h("div", { style: "margin-bottom:14px" }, h("label", {}, t("process.webhook_label")), webhook),
       priorityBlock,
@@ -270,26 +309,80 @@ function viewProcess(main) {
   renderFileCards();
 }
 
+const IMAGE_RE = /\.(jpe?g|png|webp|heic|heif|avif|tiff?|bmp|gif)$/i;
+// hidden and NAS system folders (Synology @eaDir thumbnails...) are never inputs
+const SYSTEM_SEGMENT_RE = /^[.@]|^#(recycle|snapshot)$/i;
+
+/* Files from a drop, descending into dropped folders. Entries must be taken
+   synchronously, while the drop event is still being dispatched. */
+async function filesFromDrop(dt) {
+  const entries = [...(dt.items || [])]
+    .map((item) => (item.kind === "file" && item.webkitGetAsEntry ? item.webkitGetAsEntry() : null))
+    .filter(Boolean);
+  if (!entries.length) return [...dt.files];
+  const out = [];
+  const walk = async (entry) => {
+    if (SYSTEM_SEGMENT_RE.test(entry.name)) return;
+    if (entry.isFile) {
+      try {
+        const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+        file._brPath = entry.fullPath;
+        out.push(file);
+      } catch { /* unreadable: skip */ }
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      for (;;) {  // readEntries returns at most ~100 entries per call
+        const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject)).catch(() => []);
+        if (!batch.length) break;
+        for (const child of batch) await walk(child);
+      }
+    }
+  };
+  for (const entry of entries) await walk(entry);
+  return out;
+}
+
+const fileKey = (f) => `${f._brPath || f.webkitRelativePath || f.name}|${f.size}|${f.lastModified}`;
+
 function addFiles(files) {
-  const imgs = files.filter((f) => /\.(jpe?g|png|webp|heic|heif|avif|tiff?|bmp|gif)$/i.test(f.name));
-  S.selectedFiles.push(...imgs);
+  const known = new Set(S.selectedFiles.map(fileKey));
+  let skipped = 0;
+  for (const f of files) {
+    if ((f.webkitRelativePath || "").split("/").slice(0, -1).some((s) => SYSTEM_SEGMENT_RE.test(s))) continue;
+    if (f.name.startsWith(".")) continue;
+    if (!IMAGE_RE.test(f.name)) { skipped++; continue; }
+    const key = fileKey(f);
+    if (known.has(key)) continue;  // the same folder dropped twice
+    known.add(key);
+    S.selectedFiles.push(f);
+  }
+  if (skipped) toast(t("process.skipped_files", { n: skipped }));
   renderFileCards();
 }
+
+// a 500-photo batch must not decode 500 full-size previews at once
+const PREVIEW_MAX = 60;
+let previewUrls = [];
 function renderFileCards() {
   const wrap = $("#filecards");
+  previewUrls.forEach((u) => URL.revokeObjectURL(u));
+  previewUrls = [];
   if (!wrap) return;
-  wrap.replaceChildren(...S.selectedFiles.map((f, i) => {
-    const img = h("img", { alt: "" });
+  const cards = S.selectedFiles.slice(0, PREVIEW_MAX).map((f, i) => {
+    const img = h("img", { alt: "", loading: "lazy" });
     if (/\.(jpe?g|png|webp|gif|bmp)$/i.test(f.name)) {
       img.src = URL.createObjectURL(f);
-      img.onload = () => URL.revokeObjectURL(img.src);
+      previewUrls.push(img.src);
     }
     return h("div", { class: "filecard" },
       img,
       h("button", { class: "rm", title: t("common.delete"), onclick: () => { S.selectedFiles.splice(i, 1); renderFileCards(); } }, "✕"),
-      h("div", { class: "name" }, f.name),
+      h("div", { class: "name", title: f.name }, f.name),
     );
-  }));
+  });
+  const hidden = S.selectedFiles.length - PREVIEW_MAX;
+  if (hidden > 0) cards.push(h("div", { class: "filecard more" }, h("span", {}, t("process.more_files", { n: hidden }))));
+  wrap.replaceChildren(...cards);
   const counter = $("#file-counter");
   if (counter) counter.textContent = S.selectedFiles.length ? t("process.files_selected", { n: S.selectedFiles.length }) : "";
 }
@@ -319,8 +412,11 @@ async function submitJob() {
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText));
         else {
+          let body = null;
+          try { body = JSON.parse(xhr.responseText); } catch { /* not JSON */ }
+          if (xhr.status === 401) handleUnauthorized(body);
           let msg = xhr.statusText;
-          try { const b = JSON.parse(xhr.responseText); msg = typeof b.detail === "string" ? b.detail : b.detail?.detail || msg; } catch {}
+          if (body) msg = typeof body.detail === "string" ? body.detail : body.detail?.detail || msg;
           reject(new Error(msg));
         }
       };
@@ -330,6 +426,7 @@ async function submitJob() {
     const job = await done;
     toast(t("process.submitted", { id: job.id }), "ok");
     S.selectedFiles = [];
+    renderFileCards();  // also releases the preview object URLs
     await refreshJobs();
     nav("queue");
   } catch (err) {
@@ -375,69 +472,117 @@ function jobCard(job) {
     h("div", { class: "bar" },
       h("i", { class: "b-done", style: `width:${pct(job.done)}` }),
       h("i", { class: "b-failed", style: `width:${pct(job.failed)}` }),
+      h("i", { class: "b-cancelled", style: `width:${pct(job.cancelled)}` }),
       job.status === "running" ? h("i", { class: "b-run", style: `width:${pct(running)}` }) : null,
     ),
   );
 }
 
-async function openJobDrawer(jobId) {
+/* The drawer re-renders on every live update: the open drawer keeps its
+   element (so its scroll position and no re-played slide-in) and only its
+   content is swapped; a response that lost the race to a newer one is dropped. */
+let drawerSeq = 0;
+function closeDrawer() {
+  drawerSeq++;
   document.querySelectorAll(".drawer, .drawer-back").forEach((el) => el.remove());
+  if (S.view === "queue" && S.viewArg) nav("queue");
+}
+
+async function openJobDrawer(jobId) {
+  const seq = ++drawerSeq;
   let job;
-  try { job = await api(`/api/jobs/${jobId}`); }
-  catch (err) { toast(err.message, "error"); nav("queue"); return; }
+  try { job = await api(`/api/jobs/${encodeURIComponent(jobId)}`); }
+  catch (err) {
+    if (seq === drawerSeq) { toast(err.message, "error"); nav("queue"); }
+    return;
+  }
+  if (seq !== drawerSeq || S.view !== "queue" || S.viewArg !== jobId) return;
+  const content = drawerContent(job);
+  const current = document.querySelector(".drawer");
+  if (current && current.dataset.job === job.id) {
+    current.replaceChildren(...content);
+    return;
+  }
+  document.querySelectorAll(".drawer, .drawer-back").forEach((el) => el.remove());
+  document.body.append(
+    h("div", { class: "drawer-back", onclick: closeDrawer }),
+    h("div", { class: "drawer", role: "dialog", "aria-modal": "true", dataset: { job: job.id } }, ...content),
+  );
+}
 
-  const close = () => { back.remove(); drawer.remove(); if (S.view === "queue") nav("queue"); };
-  const back = h("div", { class: "drawer-back", onclick: close });
-
+function drawerContent(job) {
   const actions = h("div", { class: "row" });
   if (job.status === "running" || job.status === "queued") {
     actions.append(h("button", { class: "btn small", onclick: async () => {
       if (await confirmModal(t("queue.cancel_confirm"))) {
-        try { await api(`/api/jobs/${job.id}/cancel`, { method: "POST" }); toast(t("common.ok"), "ok"); close(); refreshJobs(); }
+        try { await api(`/api/jobs/${job.id}/cancel`, { method: "POST" }); toast(t("common.ok"), "ok"); closeDrawer(); refreshJobs(); }
         catch (err) { toast(err.message, "error"); }
       }
     } }, t("common.cancel")));
   } else {
     actions.append(
       h("a", { class: "btn small", href: fileUrl(`/api/jobs/${job.id}/archive`) }, t("queue.download_zip")),
-      h("a", { class: "btn small ghost", href: fileUrl(`/api/jobs/${job.id}/outputs/manifest.json`), target: "_blank" }, t("queue.open_manifest")),
-      h("button", { class: "btn small danger", onclick: async () => {
-        if (await confirmModal(t("queue.delete_confirm"))) {
-          try { await api(`/api/jobs/${job.id}`, { method: "DELETE" }); close(); refreshJobs(); }
-          catch (err) { toast(err.message, "error"); }
-        }
-      } }, t("common.delete")),
+      h("a", { class: "btn small ghost", href: fileUrl(`/api/jobs/${job.id}/manifest`), target: "_blank", rel: "noopener" }, t("queue.open_manifest")),
     );
+    // watch-folder sources already moved to failed/: those retry by dropping them again
+    const retryable = job.source === "watch" ? 0 : job.failed + job.cancelled;
+    if (retryable > 0) {
+      actions.append(h("button", { class: "btn small", onclick: async () => {
+        try {
+          const again = await api(`/api/jobs/${job.id}/retry`, { method: "POST" });
+          S.missingThumbs.clear();  // retried items may now produce them
+          toast(t("queue.retry_done", { n: again.total - again.done - again.failed - again.cancelled }), "ok");
+          await refreshJobs();
+          if (S.view === "queue") render();
+        } catch (err) { toast(err.message, "error"); }
+      } }, t("queue.retry", { n: retryable })));
+    }
+    actions.append(h("button", { class: "btn small danger", onclick: async () => {
+      if (await confirmModal(t("queue.delete_confirm"))) {
+        try { await api(`/api/jobs/${job.id}`, { method: "DELETE" }); closeDrawer(); refreshJobs(); }
+        catch (err) { toast(err.message, "error"); }
+      }
+    } }, t("common.delete")));
   }
 
   const rows = job.items.map((item) => {
     const result = item.result;
-    const thumbIn = fileUrl(`/api/jobs/${job.id}/thumb/${item.idx}/in`);
-    const thumbOut = fileUrl(`/api/jobs/${job.id}/thumb/${item.idx}/out`);
+    const compare = () => item.status === "done" && openCompare(job, item);
+    // thumbnails exist once an item started ("in") / finished ("out"): don't
+    // fire a 404 per pending item on every live refresh of a big batch
+    const thumb = (kind) => {
+      const src = fileUrl(`/api/jobs/${job.id}/thumb/${item.idx}/${kind}`);
+      const exists = kind === "out" ? item.status === "done"
+        : ["running", "done", "failed"].includes(item.status);
+      if (!exists || S.missingThumbs.has(src)) return h("span", { class: "thumb-empty" });
+      return h("img", {
+        src, alt: "", loading: "lazy",
+        class: item.status === "done" ? "clickable" : "",
+        onerror: (e) => { S.missingThumbs.add(src); e.target.style.visibility = "hidden"; },
+        onclick: compare,
+      });
+    };
     const dur = result ? `${(result.duration_ms / 1000).toFixed(1)}s` : "";
+    const key = `${job.id}:${item.idx}`;
     return h("tr", {},
-      h("td", {},
-        h("div", { class: "thumb-pair" },
-          h("img", { src: thumbIn, alt: "", loading: "lazy", onerror: (e) => e.target.style.visibility = "hidden",
-            onclick: () => item.status === "done" && openCompare(job, item) }),
-          h("img", { src: thumbOut, alt: "", loading: "lazy", onerror: (e) => e.target.style.visibility = "hidden",
-            onclick: () => item.status === "done" && openCompare(job, item), style: "cursor:pointer" }),
-        ),
-      ),
+      h("td", {}, h("div", { class: "thumb-pair" }, thumb("in"), thumb("out"))),
       h("td", {}, h("div", { class: "mono" }, item.source_name),
-        item.error ? h("div", { class: "err-text" }, item.error) : null),
-      h("td", {}, statusChip(item.status)),
+        item.error && item.status !== "cancelled" ? h("div", { class: "err-text" }, item.error) : null),
+      h("td", {}, statusChip(item.status),
+        item.status === "running"
+          ? h("div", { class: "step-text", dataset: { progress: key } }, S.itemProgress[key] || "")
+          : null),
       h("td", { class: "mono dim" }, dur),
       h("td", {}, ...(result?.outputs || []).slice(0, 6).map((o) =>
         h("a", { class: "chip", style: "text-decoration:none;margin-inline-end:4px",
-          href: fileUrl(`/api/jobs/${job.id}/outputs/${o.path}`), download: "" }, o.preset || o.format))),
+          href: fileUrl(`/api/jobs/${job.id}/outputs/${encPath(o.path)}`), download: "" }, o.preset || o.format))),
     );
   });
 
-  const drawer = h("div", { class: "drawer", role: "dialog" },
+  return [
     h("div", { class: "row spread" },
       h("h1", { class: "mono", style: "font-size:16px" }, job.id),
-      h("button", { class: "btn small ghost", onclick: close }, t("common.close")),
+      h("button", { class: "btn small ghost", onclick: closeDrawer }, t("common.close")),
     ),
     h("div", { class: "row", style: "margin:10px 0 16px" },
       statusChip(job.status),
@@ -457,13 +602,10 @@ async function openJobDrawer(jobId) {
       )),
       h("tbody", {}, ...rows),
     ),
-  );
-  document.body.append(back, drawer);
+  ];
 }
 
 function openCompare(job, item) {
-  const root = $("#modal-root");
-  const closeAll = () => root.replaceChildren();
   // the original drives the frame's aspect; both layers letterbox inside it
   const before = h("img", {
     src: fileUrl(`/api/jobs/${job.id}/thumb/${item.idx}/in`), alt: t("queue.before"),
@@ -480,29 +622,28 @@ function openCompare(job, item) {
   const box = h("div", { class: "compare" }, before, afterWrap, divider,
     h("span", { class: "tag before" }, t("queue.before")),
     h("span", { class: "tag after" }, t("queue.after")));
-  let pos = 0.5;
+  let pos = 0.5;  // divider position, measured from the left edge
   const apply = () => {
     const rtl = document.documentElement.dir === "rtl";
-    const clipPct = pos * 100;
+    const leftPct = pos * 100;
+    // "after" sits on the inline-end side: right of the divider in LTR, left of it in RTL
     afterWrap.style.clipPath = rtl
-      ? `inset(0 ${clipPct}% 0 0)`
-      : `inset(0 0 0 ${clipPct}%)`;
-    divider.style.insetInlineStart = `${rtl ? 100 - clipPct : clipPct}%`;
+      ? `inset(0 ${100 - leftPct}% 0 0)`
+      : `inset(0 0 0 ${leftPct}%)`;
+    divider.style.insetInlineStart = `${rtl ? 100 - leftPct : leftPct}%`;
   };
   const move = (clientX) => {
     const rect = box.getBoundingClientRect();
     pos = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    if (document.documentElement.dir === "rtl") { /* pos measured ltr; clip handles rtl */ }
     apply();
   };
   box.addEventListener("pointerdown", (e) => { box.setPointerCapture(e.pointerId); move(e.clientX); });
   box.addEventListener("pointermove", (e) => { if (e.buttons) move(e.clientX); });
   apply();
-  root.replaceChildren(h("div", { class: "modal", style: "max-width:520px" },
+  openModal(h("div", { class: "modal", style: "max-width:520px" },
     box,
     h("div", { class: "row", style: "margin-top:14px;justify-content:flex-end" },
-      h("button", { class: "btn", onclick: closeAll }, t("common.close")))));
-  root.addEventListener("click", (e) => { if (e.target === root) closeAll(); }, { once: true });
+      h("button", { class: "btn", onclick: closeModal }, t("common.close")))));
 }
 
 /* ---------- view: recipes ---------- */
@@ -563,9 +704,8 @@ async function openRecipeEditor(name) {
       return res.valid;
     } catch (err) { status.textContent = err.message; return false; }
   };
-  const root = $("#modal-root");
-  const close = () => root.replaceChildren();
-  root.replaceChildren(h("div", { class: "modal", style: "max-width:720px" },
+  const close = closeModal;
+  openModal(h("div", { class: "modal", style: "max-width:720px" },
     h("h1", { style: "font-size:16px;margin-bottom:10px" }, t("recipes.editor_title")),
     builtin ? h("p", { class: "dim", style: "font-size:12.5px" }, t("recipes.builtin_note")) : null,
     ta,
@@ -582,7 +722,7 @@ async function openRecipeEditor(name) {
       } }, t("recipes.save")),
       h("button", { class: "btn small ghost", onclick: close }, t("common.close")),
     ),
-  ));
+  ), { dismissable: false });  // a stray click must not throw away unsaved YAML
 }
 
 /* ---------- view: models ---------- */
@@ -611,11 +751,13 @@ function viewModels(main) {
           try { const r = await api(`/api/models/${m.id}/verify`); toast(`${m.id}: ${r.detail}`, r.ok ? "ok" : "error"); }
           catch (err) { toast(err.message, "error"); }
         } }, t("models.verify")),
-        h("button", { class: "btn small danger", onclick: async () => {
+        isAdmin() ? h("button", { class: "btn small danger", onclick: async () => {
           if (await confirmModal(t("models.delete_confirm"))) {
-            await api(`/api/models/${m.id}`, { method: "DELETE" }); refreshModels().then(render);
+            try { await api(`/api/models/${m.id}`, { method: "DELETE" }); }
+            catch (err) { toast(err.message, "error"); }
+            refreshModels().then(render);
           }
-        } }, t("common.delete")),
+        } }, t("common.delete")) : null,
       );
     }
     grid.append(h("div", { class: "panel modelcard" },
@@ -701,11 +843,11 @@ function viewUsers(main) {
               h("button", { class: "btn small", onclick: async () => {
                 try {
                   const r = await api(`/api/users/${u.id}/api-key`, { method: "POST" });
-                  const root = $("#modal-root");
-                  root.replaceChildren(h("div", { class: "modal" },
+                  openModal(h("div", { class: "modal" },
                     h("p", {}, t("users.api_key_note")),
                     h("pre", { class: "yaml", style: "user-select:all" }, r.api_key),
-                    h("div", { class: "row" }, h("button", { class: "btn sig", onclick: () => root.replaceChildren() }, t("common.ok")))));
+                    h("div", { class: "row" }, h("button", { class: "btn sig", onclick: closeModal }, t("common.ok")))),
+                  { dismissable: false });  // shown once: only an explicit OK may close it
                   await refreshUsers();
                 } catch (err) { toast(err.message, "error"); }
               } }, t("users.api_key")),
@@ -733,9 +875,8 @@ function userEditor(_user, done) {
   const role = h("select", {},
     h("option", { value: "member" }, t("users.role.member")),
     h("option", { value: "admin" }, t("users.role.admin")));
-  const root = $("#modal-root");
-  const close = () => root.replaceChildren();
-  root.replaceChildren(h("div", { class: "modal" },
+  const close = closeModal;
+  openModal(h("div", { class: "modal" },
     h("h1", { style: "font-size:16px;margin:0 0 14px" }, t("users.new_title")),
     h("div", { style: "display:grid;gap:10px" },
       h("div", {}, h("label", {}, t("users.email")), email),
@@ -752,7 +893,7 @@ function userEditor(_user, done) {
           close(); await refreshUsers(); done();
         } catch (err) { toast(err.message, "error"); }
       } }, t("users.create"))),
-  ));
+  ), { dismissable: false });
 }
 
 /* ---------- view: watch ---------- */
@@ -786,7 +927,9 @@ function viewWatch(main) {
   main.append(
     h("div", { class: "row", style: "margin-top:16px" },
       h("button", { class: "btn", onclick: async () => {
-        await api("/api/watch/reload", { method: "POST" }); await refreshSystem(); render(); toast(t("common.ok"), "ok");
+        try {
+          await api("/api/watch/reload", { method: "POST" }); await refreshSystem(); render(); toast(t("common.ok"), "ok");
+        } catch (err) { toast(err.message, "error"); }
       } }, t("watch.reload"))),
     h("div", { class: "panel", style: "margin-top:16px" },
       h("strong", {}, t("watch.howto_title")),
@@ -869,8 +1012,8 @@ function licensePanel(lic) {
         } }, t("license.install")),
         lic.valid ? h("button", { class: "btn small danger", onclick: async () => {
           if (await confirmModal(t("license.remove_confirm"))) {
-            await api("/api/license", { method: "DELETE" });
-            location.reload();
+            try { await api("/api/license", { method: "DELETE" }); location.reload(); }
+            catch (err) { toast(err.message, "error"); }
           }
         } }, t("license.remove")) : null,
       ));
@@ -881,13 +1024,17 @@ function licensePanel(lic) {
 /* ================= data refresh ================= */
 async function refreshJobs() {
   try { S.jobs = (await api("/api/jobs?limit=100")).jobs; } catch { /* surfaced elsewhere */ }
-  if (S.view === "queue") { renderNav(); }
+  renderNavLinks();  // the running-jobs badge is visible from every view
 }
 async function refreshRecipes() {
   try {
     const d = await api("/api/recipes");
     S.recipes = d.recipes; S.recipeProblems = d.problems;
-    if (!S.selectedRecipe && S.recipes.length) S.selectedRecipe = S.recipes[0].name;
+    // a remembered recipe may have been deleted or renamed: what the picker
+    // shows must be exactly what gets submitted
+    if (!S.recipes.some((r) => r.name === S.selectedRecipe)) {
+      S.selectedRecipe = S.recipes.length ? S.recipes[0].name : "";
+    }
   } catch { /* ignore */ }
 }
 async function refreshModels() {
@@ -913,7 +1060,14 @@ function connectEvents() {
   es.onmessage = (e) => {
     let ev;
     try { ev = JSON.parse(e.data); } catch { return; }
-    if (ev.type === "job.updated" || ev.type === "item.finished" || ev.type === "job.deleted") {
+    if (ev.type === "item.progress") {
+      // current step / first-use model download, shown under the running item
+      const key = `${ev.job_id}:${ev.idx}`;
+      S.itemProgress[key] = ev.message;
+      const el = document.querySelector(`.drawer [data-progress="${CSS.escape(key)}"]`);
+      if (el) el.textContent = ev.message;
+    } else if (ev.type === "job.updated" || ev.type === "item.finished" || ev.type === "job.deleted") {
+      if (ev.type === "item.finished") delete S.itemProgress[`${ev.job_id}:${ev.idx}`];
       debouncedRefresh();
     } else if (ev.type === "model.progress") {
       S.pullProgress[ev.model] = ev.total ? Math.round((ev.done / ev.total) * 100) : 0;
@@ -1000,6 +1154,11 @@ async function boot() {
   });
   $("#tour-link").addEventListener("click", showTour);
   window.addEventListener("hashchange", route);
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if ($("#modal-root").childElementCount) { if (modalDismissable) closeModal(); }
+    else if (document.querySelector(".drawer")) closeDrawer();
+  });
 
   try {
     const langs = await api("/api/i18n");
@@ -1030,12 +1189,13 @@ async function boot() {
 
 async function start() {
   $("#app").hidden = false;
-  $("#brand-version").textContent = "";
   await Promise.all([refreshRecipes(), refreshJobs(), refreshModels(), refreshSystem()]);
   if (S.system) $("#brand-version").textContent = `v${S.system.version}`;
-  connectEvents();
-  setInterval(() => { refreshSystem(); if (S.view === "system") render(); }, 30000);
+  connectEvents();  // (re)connect: after re-unlocking, the stream needs the new key
   route();
+  if (S.started) return;  // unlocking again after a 401 must not double the timers
+  S.started = true;
+  setInterval(() => { refreshSystem(); if (S.view === "system") render(); }, 30000);
   maybeShowTour();
 }
 
