@@ -144,6 +144,10 @@ def parse_license(
     tier = str(payload.get("tier", ""))
     if tier not in TIER_FEATURES:
         return _fail(raw, f"unknown tier '{tier}'")
+    try:
+        seats = int(payload.get("seats") or DEFAULT_SEATS.get(tier, 1))
+    except (TypeError, ValueError, OverflowError):
+        return _fail(raw, "malformed seat count")
 
     expires = payload.get("expires")
     expired = False
@@ -162,7 +166,7 @@ def parse_license(
         email=str(payload.get("email", "")),
         issued=str(payload.get("issued", "")),
         expires=str(expires) if expires is not None else None,
-        seats=int(payload.get("seats") or DEFAULT_SEATS.get(tier, 1)),
+        seats=seats,
         key_id=key_id,
         valid=True,
         expired=expired,
