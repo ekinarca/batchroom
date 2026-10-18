@@ -115,6 +115,7 @@ h1 { font-size: 21px; margin: 0 0 4px; letter-spacing: .2px; }
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-s);
   padding: 7px 14px; font: inherit; font-size: 13px;
+  text-decoration: none;
   transition: border-color .12s ease, background .12s ease, transform .05s ease;
 }
 .btn:hover { border-color: var(--ink-faint); }
@@ -132,7 +133,7 @@ input[type="text"], input[type="password"], input[type="url"], select, textarea 
   padding: 7px 10px; font: inherit; font-size: 13px;
   width: 100%;
 }
-select { width: auto; }
+select { width: auto; max-width: 100%; }
 textarea { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; resize: vertical; }
 label { display: block; color: var(--ink-dim); font-size: 12.5px; margin-bottom: 5px; }
 
@@ -151,12 +152,12 @@ label { display: block; color: var(--ink-dim); font-size: 12.5px; margin-bottom:
 @keyframes pulse { 50% { opacity: .25; } }
 
 .grid { display: grid; gap: 14px; }
-.grid.cols-2 { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
-.grid.cols-3 { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.grid.cols-2 { grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
+.grid.cols-3 { grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); }
 
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; }
 .kv dt { color: var(--ink-faint); }
-.kv dd { margin: 0; font-family: var(--mono); font-size: 12.5px; }
+.kv dd { margin: 0; font-family: var(--mono); font-size: 12.5px; min-width: 0; overflow-wrap: anywhere; }
 
 .mono { font-family: var(--mono); font-size: 12.5px; }
 .dim { color: var(--ink-dim); }
@@ -341,6 +342,7 @@ pre.yaml {
   position: fixed; inset: 0; z-index: 50;
   background: rgba(0, 0, 0, .55);
   display: grid; place-items: center; padding: 24px;
+  overflow-y: auto;  /* a tall editor on a short screen must still reach its buttons */
 }
 .modal {
   background: var(--bg-raise); border: 1px solid var(--line-strong);

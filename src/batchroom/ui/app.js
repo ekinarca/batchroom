@@ -126,16 +126,33 @@ function closeModal() {
 function openModal(dialog, { onClose = null, dismissable = true } = {}) {
   closeModal();
   const root = $("#modal-root");
+  const opener = document.activeElement;
   const onBackdrop = (e) => { if (e.target === root && modalDismissable) closeModal(); };
+  // aria-modal: Tab must cycle inside the dialog, never reach the page behind it
+  const onTab = (e) => {
+    if (e.key !== "Tab") return;
+    const items = [...dialog.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")]
+      .filter((el) => !el.disabled && el.offsetParent !== null);
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    const inside = dialog.contains(document.activeElement);
+    if (e.shiftKey && (!inside || document.activeElement === first)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (!inside || document.activeElement === last)) { e.preventDefault(); first.focus(); }
+  };
   root.addEventListener("click", onBackdrop);
+  document.addEventListener("keydown", onTab);
   modalDismissable = dismissable;
   modalCleanup = () => {
     root.removeEventListener("click", onBackdrop);
+    document.removeEventListener("keydown", onTab);
+    if (opener && opener.isConnected && opener.focus) opener.focus();
     if (onClose) onClose();
   };
   dialog.setAttribute("role", "dialog");
   dialog.setAttribute("aria-modal", "true");
+  dialog.tabIndex = -1;
   root.replaceChildren(dialog);
+  dialog.focus();  // callers may move it on to a specific control
   return dialog;
 }
 function confirmModal(message) {
@@ -227,6 +244,7 @@ function renderNav() {
   const sel = $("#lang-select");
   sel.replaceChildren(...S.languages.map((l) =>
     h("option", { value: l.code, selected: l.code === S.lang }, l.name)));
+  sel.setAttribute("aria-label", t("system.language"));
   $("#tour-link").textContent = t("tour.reopen");
   const foot = $("#user-box");
   if (foot) {
@@ -297,7 +315,7 @@ function viewProcess(main) {
     h("p", { class: "sub" }, t("app.tagline")),
     h("div", { class: "panel" },
       h("div", { class: "row", style: "margin-bottom:14px" },
-        h("div", { style: "flex:1;min-width:260px" }, h("label", {}, t("process.recipe_label")), recipeSel),
+        h("div", { style: "flex:1;min-width:min(260px,100%)" }, h("label", {}, t("process.recipe_label")), recipeSel),
       ),
       dz, fileInput, folderInput, cards,
       h("hr", { class: "sep" }),
@@ -458,7 +476,9 @@ function jobCard(job) {
   const total = job.total || 1;
   const pct = (n) => `${(100 * n) / total}%`;
   const running = Math.max(0, total - job.done - job.failed - job.cancelled);
-  return h("div", { class: "panel jobcard", onclick: () => nav(`queue/${job.id}`) },
+  return h("div", { class: "panel jobcard", tabindex: "0", role: "link",
+    onclick: () => nav(`queue/${job.id}`),
+    onkeydown: (e) => { if (e.key === "Enter") nav(`queue/${job.id}`); } },
     h("div", { class: "row spread" },
       h("h3", {}, job.id),
       statusChip(job.status),
@@ -504,10 +524,9 @@ async function openJobDrawer(jobId) {
     return;
   }
   document.querySelectorAll(".drawer, .drawer-back").forEach((el) => el.remove());
-  document.body.append(
-    h("div", { class: "drawer-back", onclick: closeDrawer }),
-    h("div", { class: "drawer", role: "dialog", "aria-modal": "true", dataset: { job: job.id } }, ...content),
-  );
+  const drawer = h("div", { class: "drawer", role: "dialog", "aria-modal": "true", dataset: { job: job.id } }, ...content);
+  document.body.append(h("div", { class: "drawer-back", onclick: closeDrawer }), drawer);
+  drawer.querySelector("button")?.focus();  // its close button
 }
 
 function drawerContent(job) {
@@ -691,7 +710,7 @@ async function openRecipeEditor(name) {
       source = r.source; builtin = r.builtin;
     } catch (err) { toast(err.message, "error"); return; }
   }
-  const ta = h("textarea", { rows: 18, spellcheck: "false" }, source);
+  const ta = h("textarea", { rows: 18, spellcheck: "false", dir: "ltr" }, source);
   const status = h("div", { class: "dim", style: "min-height:1.4em;font-size:12.5px" });
   const validate = async () => {
     try {
@@ -782,10 +801,15 @@ async function pullModel(m) {
   try {
     S.pullProgress[m.id] = 0;
     render();
-    await api(`/api/models/${m.id}/pull`, {
+    const r = await api(`/api/models/${m.id}/pull`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ allow_unpinned: !m.pinned }),
     });
+    if (r.status === "already-downloaded") {  // no progress events will follow
+      delete S.pullProgress[m.id];
+      await refreshModels();
+      if (S.view === "models") render();
+    }
   } catch (err) {
     delete S.pullProgress[m.id];
     toast(err.message, "error");
@@ -952,7 +976,7 @@ function viewSystem(main) {
           h("dt", {}, t("system.version")), h("dd", {}, `${sys.app} ${sys.version}`),
           h("dt", {}, t("system.workers")), h("dd", {}, String(sys.workers)),
           h("dt", {}, t("system.uptime")), h("dd", {}, uptime),
-          h("dt", {}, t("system.queue_depth")), h("dd", {}, `${sys.queue.pending} pending · ${sys.queue.running} running`),
+          h("dt", {}, t("system.queue_depth")), h("dd", {}, `${sys.queue.pending} ${t("status.pending")} · ${sys.queue.running} ${t("status.running")}`),
           h("dt", {}, t("system.auth")), h("dd", {}, sys.auth_required ? t("system.auth_on") : t("system.auth_off")),
           h("dt", {}, t("system.watch_state")), h("dd", {}, sys.watch?.enabled ? t("system.on") : t("system.off")),
         ),
@@ -998,7 +1022,7 @@ function licensePanel(lic) {
   }
 
   if (isAdmin()) {
-    const input = h("textarea", { rows: 3, placeholder: t("license.install_placeholder"), spellcheck: "false" });
+    const input = h("textarea", { rows: 3, placeholder: t("license.install_placeholder"), spellcheck: "false", dir: "auto" });
     panel.append(h("hr", { class: "sep" }),
       h("label", {}, t("license.install_label")), input,
       h("div", { class: "row", style: "margin-top:10px" },
@@ -1082,6 +1106,11 @@ function connectEvents() {
       refreshModels().then(() => S.view === "models" && render());
     }
   };
+  let opened = false;
+  es.onopen = () => {
+    if (opened) debouncedRefresh();  // events sent while we were disconnected are lost
+    opened = true;
+  };
   es.onerror = () => { /* EventSource auto-reconnects */ };
 }
 
@@ -1092,6 +1121,7 @@ function showAuthGate(show) {
   if (show) {
     $("#auth-prompt").textContent = t("auth.prompt") || "This server requires an API key.";
     $("#auth-submit").textContent = t("auth.submit") || "Unlock";
+    $("#auth-key").placeholder = t("auth.placeholder");
     $("#auth-key").focus();
   }
 }
@@ -1195,7 +1225,12 @@ async function start() {
   route();
   if (S.started) return;  // unlocking again after a 401 must not double the timers
   S.started = true;
-  setInterval(() => { refreshSystem(); if (S.view === "system") render(); }, 30000);
+  setInterval(async () => {
+    await refreshSystem();
+    // a re-render would wipe a license key being pasted into the system view
+    const typing = $("#main textarea");
+    if (S.view === "system" && !(typing && (typing.value || typing === document.activeElement))) render();
+  }, 30000);
   maybeShowTour();
 }
 

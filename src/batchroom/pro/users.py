@@ -65,6 +65,19 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
+_dummy_hash: str | None = None
+
+
+def _equalizer_hash() -> str:
+    """A real scrypt hash to check unknown accounts against, made once: hashing
+    a fresh one per attempt cost a second scrypt, so absent accounts were the
+    slow ones."""
+    global _dummy_hash
+    if _dummy_hash is None:
+        _dummy_hash = hash_password(secrets.token_urlsafe(16))
+    return _dummy_hash
+
+
 def _token_hash(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -204,7 +217,7 @@ def authenticate(db: Database, email: str, password: str) -> dict | None:
         ).fetchone()
     if row is None:
         # burn comparable time so absent accounts aren't distinguishable
-        verify_password(password, hash_password("timing-equalizer"))
+        verify_password(password, _equalizer_hash())
         return None
     if not verify_password(password, row["password"]):
         return None
