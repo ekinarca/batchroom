@@ -21,6 +21,9 @@ RENAME_VARS = {"original", "preset", "index", "recipe", "date", "width", "height
 _VAR_RE = re.compile(r"\{([a-z_]+)\}")
 # Windows-unsafe + path characters removed from final filenames.
 _UNSAFE_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# Filesystems cap a name at 255 bytes; leave room for the extension, a
+# "-N" collision suffix and the ".part" of the atomic write.
+_MAX_NAME_BYTES = 200
 
 
 def validate_pattern(pattern: str) -> str:
@@ -44,6 +47,9 @@ def render_pattern(pattern: str, values: dict[str, str]) -> str:
     name = _UNSAFE_RE.sub("-", name)
     # collapse artifacts like "photo--" when {preset} is empty
     name = re.sub(r"-{2,}", "-", name).strip("-. ")
+    if len(name.encode()) > _MAX_NAME_BYTES:
+        # cut on a character boundary, never mid-way through a UTF-8 sequence
+        name = name.encode()[:_MAX_NAME_BYTES].decode(errors="ignore").rstrip("-. ")
     return name or "output"
 
 
