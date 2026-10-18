@@ -4,6 +4,79 @@ All notable changes to Batchroom. Format: [Keep a Changelog](https://keepachange
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-18
+
+Upgrading is drop-in (no schema change). 0.2.0 was never published as an
+image, so coming from 0.1.0 you get its changes too: see the 0.2.0
+section of [CHANGELOG.md](https://github.com/ekinarca/batchroom/blob/main/CHANGELOG.md)
+(the database migrates itself on first start).
+
+### Security
+
+- `GET /api/jobs/{id}/outputs/...` served any file under the job's output
+  folder. In multi-user mode a member could point a path job at `/` or the
+  data folder and download other people's results or the database. It now
+  serves only the outputs recorded for that job, the same rule the ZIP
+  download already followed.
+- The live event stream (`/api/events`) sent every job's updates
+  (ids, output folders, webhook URLs, errors) to every signed-in user.
+  Members now only receive events for their own jobs.
+- Login: an unknown email took twice as long to reject as a wrong
+  password, which revealed which accounts exist. Both now take the same
+  time.
+
+### Changed
+
+- `ecom-packshot`: the `transparent-1500` export really is transparent
+  now (it used to be a white square). `web-2048` (JPG) and `web-1024`
+  (WebP) stay on white.
+- Transparent canvases saved as JPG/BMP flatten onto white, not black.
+- Job ids carry 40 random bits (`j-YYYYMMDD-` + 10 hex digits). With the
+  old 24 bits, a watch folder running about 1000 jobs a day had a ~3%
+  daily chance of an id collision.
+- Output filenames are capped at 200 bytes. A source name over ~250 bytes
+  used to fail its item with an OS error.
+
+### Fixed
+
+- Images: 16-bit greyscale PNG/TIFF loaded almost white; camera JPEGs that
+  Pillow reads as MPO came out as PNG when the recipe kept the source
+  format; CMYK and grey ICC profiles stayed attached to RGB output.
+- Recipes: an unsupported format (`gif`) or a version like `v2` broke
+  recipe discovery for everyone and made `/api/recipes/validate` answer
+  500. Both are now ordinary validation errors. `quality: yes` is
+  rejected, a blank `description:` no longer shows as "None", and a
+  second `preset-pack` step fails when the recipe loads instead of
+  mid-batch.
+- An output folder that can't be created answers 400 (or moves
+  watch-folder files to `failed/`). It used to give a 500, or after a
+  restart keep the server from starting.
+- A `watch.yaml` without the `watch:` key crashed watcher startup and
+  `POST /api/watch/reload`; it is now reported as a config problem.
+- Path jobs whose paths can't be checked (permission denied, name too
+  long) answer 400 "not found" instead of 500.
+- Webhooks with an invalid URL log an error instead of an unhandled task
+  exception. Deleting a job notifies live clients reliably.
+- Model downloads: a failure that wasn't a network or checksum error
+  (disk full, permissions) never reached the UI. Two processes
+  downloading the same model (`batchroom models pull` next to a running
+  server) shared one temp file.
+- CLI: `--workers 0`/`-1` and `--port 0` were ignored or crashed; they now
+  give a usage error.
+- Pro: a signed license with a malformed seat count crashed startup
+  instead of being rejected.
+- Web UI:
+  - Dialogs keep keyboard focus inside and return it when closed; job
+    cards and the job drawer work from the keyboard.
+  - The 30-second refresh no longer wipes a license key you are pasting.
+  - The queue refreshes after the live connection drops and reconnects.
+  - Pulling a model that was already downloaded no longer sticks at
+    "0%".
+  - The queue counts, language picker and API-key field are translated.
+  - The recipe editor stays left-to-right in Arabic.
+  - Card grids and the recipe picker fit phone screens, and tall dialogs
+    scroll.
+
 ## [0.2.0] — 2026-10-15
 
 Upgrading from 0.1.0 is drop-in: the database migrates itself on first

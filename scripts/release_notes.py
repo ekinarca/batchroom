@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print a version's release notes: its CHANGELOG.md section + install lines.
 
-    python scripts/release_notes.py v0.2.0 [IMAGE] > notes.md
+    python scripts/release_notes.py v0.3.0 [IMAGE] > notes.md
 
 Used by .github/workflows/release.yml to publish the GitHub release page.
 Fails when CHANGELOG.md has no section for the version, so a tag pushed
