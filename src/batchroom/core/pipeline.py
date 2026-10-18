@@ -132,7 +132,9 @@ def _materialize(
         quality=planned.quality,
         lossless=planned.lossless,
         keep_metadata=state.keep_metadata,
-        background=planned.background[:3],
+        # a transparent canvas color has no meaningful RGB (#00000000 -> black);
+        # opaque-only formats flatten such pixels onto white instead
+        background=planned.background[:3] if planned.background[3] == 255 else (255, 255, 255),
     )
     _write_atomic(out_dir / relpath, data)
     return OutputRecord(

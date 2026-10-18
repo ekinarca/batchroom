@@ -146,6 +146,11 @@ def _ensure_rgba(pixels: np.ndarray) -> np.ndarray:
 
 
 def pil_to_rgba_array(pil: Image.Image) -> np.ndarray:
+    if pil.mode.startswith("I;16"):
+        # 16-bit grayscale (PNG/TIFF scans): convert() clips to 0-255, which
+        # turns almost every pixel white. Scale to 8-bit first.
+        wide = np.asarray(pil).astype(np.uint32)
+        pil = Image.fromarray(((wide * 255 + 32767) // 65535).astype(np.uint8))
     if pil.mode != "RGBA":
         pil = pil.convert("RGBA")
     return np.asarray(pil, dtype=np.uint8).copy()
@@ -158,6 +163,14 @@ def rgba_array_to_pil(pixels: np.ndarray) -> Image.Image:
 # ---------------------------------------------------------------------------
 # Load
 # ---------------------------------------------------------------------------
+
+
+def _rgb_icc(icc) -> bytes | None:
+    """Pixels are always RGB after decode; a CMYK or gray profile (ICC header
+    color space at bytes 16-20) would mis-tag them in every output."""
+    if isinstance(icc, bytes) and icc[16:20] == b"RGB ":
+        return icc
+    return None
 
 
 def _guard_pixel_count(pil: Image.Image, name: str) -> None:
@@ -181,7 +194,7 @@ def load_image(path: str | Path) -> ImageData:
             _guard_pixel_count(pil, path.name)
             pil.load()
             source_format = (pil.format or "png").lower()
-            if source_format == "jpeg":
+            if source_format in ("jpeg", "mpo"):  # MPO: multi-picture JPEG (many cameras)
                 source_format = "jpg"
             if source_format == "heif":
                 source_format = "heic"
@@ -204,7 +217,7 @@ def load_image(path: str | Path) -> ImageData:
         ) from exc
     return ImageData(
         pixels=pixels,
-        icc_profile=icc if isinstance(icc, bytes) else None,
+        icc_profile=_rgb_icc(icc),
         exif=exif if isinstance(exif, bytes) else None,
         dpi=tuple(dpi) if dpi else None,
         source_format=source_format if source_format in FORMATS else "png",
@@ -218,7 +231,7 @@ def load_image_bytes(data: bytes, *, name: str = "upload") -> ImageData:
             _guard_pixel_count(pil, name)
             pil.load()
             source_format = (pil.format or "png").lower()
-            if source_format == "jpeg":
+            if source_format in ("jpeg", "mpo"):  # MPO: multi-picture JPEG (many cameras)
                 source_format = "jpg"
             if source_format == "heif":
                 source_format = "heic"
@@ -230,7 +243,7 @@ def load_image_bytes(data: bytes, *, name: str = "upload") -> ImageData:
         raise ImageIOError(f"cannot decode '{name}': {exc}") from exc
     return ImageData(
         pixels=pixels,
-        icc_profile=icc if isinstance(icc, bytes) else None,
+        icc_profile=_rgb_icc(icc),
         exif=exif if isinstance(exif, bytes) else None,
         source_format=source_format if source_format in FORMATS else "png",
     )
