@@ -31,7 +31,7 @@ from pathlib import Path
 import yaml
 
 from ..ops.base import Op, OpParams, get_op
-from .errors import RecipeError
+from .errors import ImageIOError, RecipeError
 from .image_io import FORMATS, normalize_format
 
 BUILTIN_RECIPES_DIR = Path(__file__).resolve().parent.parent / "recipes"
@@ -176,6 +176,9 @@ def parse_recipe(
         params_raw = {k: v for k, v in raw.items() if k != "op"}
         params = op.validate_params(params_raw, recipe=name, step=i)
         steps.append(RecipeStep(op=op, params=params, raw=raw))
+    if sum(1 for s in steps if s.op.name == "preset-pack") > 1:
+        # PresetPackOp refuses this per item; fail at load, not mid-batch
+        raise RecipeError("only one preset-pack step is allowed per recipe", recipe=name)
 
     # ---- output -------------------------------------------------------
     out_raw = _require_mapping(data.get("output"), "'output'", name)
@@ -194,9 +197,14 @@ def parse_recipe(
         )
     out_format = out_raw.get("format")
     if out_format is not None:
-        out_format = normalize_format(str(out_format))
+        try:
+            out_format = normalize_format(str(out_format))
+        except ImageIOError as exc:
+            raise RecipeError(
+                f"output.format: unsupported format '{out_format}'", recipe=name, hint=exc.hint
+            ) from exc
     quality = out_raw.get("quality", 90)
-    if not isinstance(quality, int) or not (1 <= quality <= 100):
+    if isinstance(quality, bool) or not isinstance(quality, int) or not (1 <= quality <= 100):
         raise RecipeError("output.quality must be an integer 1-100", recipe=name)
     output = OutputSpec(
         structure=structure,
@@ -207,10 +215,17 @@ def parse_recipe(
         keep_metadata=bool(out_raw.get("keep_metadata", False)),
     )
 
+    try:
+        version = int(data.get("version", 1))
+    except (TypeError, ValueError):
+        raise RecipeError(
+            f"'version' must be an integer, got {data.get('version')!r}", recipe=name
+        ) from None
+
     return Recipe(
         name=name,
-        description=str(data.get("description", "")),
-        version=int(data.get("version", 1)),
+        description=str(data.get("description") or ""),
+        version=version,
         input_formats=formats,
         steps=steps,
         output=output,

@@ -10,13 +10,13 @@ steps:
     model: auto            # isnet-general by default; swap for u2netp on weak hardware
     alpha_matting: true
   - op: composite
-    background: "#FFFFFF"
+    background: transparent   # keep alpha for the transparent export; presets add the white
     padding: 8%
     aspect: "1:1"
   - op: preset-pack
     presets:
       - { name: web-2048,        size: 2048x2048, format: jpg,  quality: 90 }
-      - { name: web-1024,        size: 1024x1024, format: webp, quality: 85 }
+      - { name: web-1024,        size: 1024x1024, format: webp, quality: 85, background: "#FFFFFF" }
       - { name: transparent-1500, size: 1500x1500, format: png, background: transparent, fit: pad }
 output:
   structure: per-preset-folder
