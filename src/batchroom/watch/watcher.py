@@ -83,7 +83,7 @@ def load_watch_config(path: Path) -> WatchConfigResult:
     except (OSError, yaml.YAMLError) as exc:
         result.problems.append(f"watch.yaml unreadable: {exc}")
         return result
-    entries = data.get("watch")
+    entries = data.get("watch") if isinstance(data, dict) else None
     if entries is None:
         result.problems.append("watch.yaml has no top-level 'watch:' list")
         return result

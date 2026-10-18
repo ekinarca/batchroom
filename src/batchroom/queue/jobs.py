@@ -41,7 +41,9 @@ def _now() -> str:
 
 def new_job_id() -> str:
     stamp = datetime.now(UTC).strftime("%Y%m%d")
-    return f"j-{stamp}-{secrets.token_hex(3)}"
+    # 40 random bits: a busy watch folder (thousands of jobs a day) never
+    # collides with an existing id — 24 bits did, at ~3% a day per 1000 jobs
+    return f"j-{stamp}-{secrets.token_hex(5)}"
 
 
 class JobQueue:
@@ -191,7 +193,13 @@ class JobQueue:
                 hint="check the recipe's input.formats against your files",
             )
         out_dir = output_dir or (self.settings.jobs_dir / job_id / "out")
-        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:  # unwritable/unmounted share: a clean error, not a crash
+            raise JobError(
+                f"cannot create output folder {out_dir}: {exc.strerror or exc}",
+                hint="check that the output path exists and is writable",
+            ) from exc
         now = _now()
         with self.db.connect() as conn:
             conn.execute(
@@ -342,7 +350,8 @@ class JobQueue:
         jobs_root = self.settings.jobs_dir.resolve()
         if job_dir.is_dir() and job_dir != jobs_root and job_dir.is_relative_to(jobs_root):
             shutil.rmtree(job_dir, ignore_errors=True)
-        self.events.publish("job.deleted", job_id=job_id)
+        # API routes call this from a worker thread: never touch the loop's queues directly
+        self.events.publish_from_thread("job.deleted", {"job_id": job_id})
 
     # ------------------------------------------------------------------
     # dispatcher

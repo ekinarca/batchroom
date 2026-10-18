@@ -19,6 +19,17 @@ from .config import Settings
 from .core.errors import BatchroomError
 
 
+def _positive_int(raw: str) -> int:
+    """argparse type: an integer >= 1 (BATCHROOM_WORKERS/PORT enforce the same)."""
+    try:
+        value = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be an integer, got {raw!r}") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
+    return value
+
+
 def _settings_from(args) -> Settings:
     settings = Settings.from_env()
     if getattr(args, "data_dir", None):
@@ -385,15 +396,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_serve = sub.add_parser("serve", help="start the server and web UI")
     p_serve.add_argument("--host", default=None)
-    p_serve.add_argument("--port", type=int, default=None)
-    p_serve.add_argument("--workers", type=int, default=None)
+    p_serve.add_argument("--port", type=_positive_int, default=None)
+    p_serve.add_argument("--workers", type=_positive_int, default=None)
     p_serve.set_defaults(func=cmd_serve)
 
     p_run = sub.add_parser("run", help="run a recipe over files, headless")
     p_run.add_argument("recipe", help="recipe name or path to a recipe .yaml")
     p_run.add_argument("inputs", nargs="+", help="input files or directories")
     p_run.add_argument("-o", "--output", required=True, help="output directory")
-    p_run.add_argument("--workers", type=int, default=None)
+    p_run.add_argument("--workers", type=_positive_int, default=None)
     p_run.set_defaults(func=cmd_run)
 
     p_recipes = sub.add_parser("recipes", help="list or validate recipes")
