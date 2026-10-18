@@ -366,7 +366,7 @@ async def create_job(request: Request) -> dict:
         recipe = _resolve_recipe(request, body.recipe)
         webhook_url = _webhook_or_400(body.webhook_url)
         paths = [Path(p).expanduser() for p in body.paths]
-        missing = [str(p) for p in paths if not p.exists()]
+        missing = [str(p) for p in paths if not _path_exists(p)]
         if missing:
             raise HTTPException(
                 status_code=400, detail=f"path(s) not found: {', '.join(missing[:5])}"
@@ -423,6 +423,13 @@ async def create_job(request: Request) -> dict:
             raise _error(exc) from exc
         raise
     return job
+
+
+def _path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:  # permission denied on a parent, name too long...
+        return False
 
 
 def _job_exists(queue: JobQueue, job_id: str) -> bool:
@@ -534,9 +541,25 @@ def job_output(request: Request, job_id: str, relpath: str) -> FileResponse:
     candidate = (out_dir / relpath).resolve()
     if not candidate.is_relative_to(out_dir):
         raise HTTPException(status_code=400, detail="path escapes the job output directory")
-    if not candidate.is_file():
+    # only this job's recorded outputs: a shared output folder (or one pointed
+    # at an arbitrary directory) must not serve everything else in it
+    recorded = _job_outputs(_queue(request), job_id, out_dir).values()
+    if candidate not in recorded or not candidate.is_file():
         raise HTTPException(status_code=404, detail="output not found")
     return FileResponse(candidate, filename=candidate.name)
+
+
+def _job_outputs(queue: JobQueue, job_id: str, out_dir: Path) -> dict[str, Path]:
+    """``relpath -> resolved path`` of the outputs recorded for this job that
+    stay inside its output directory."""
+    outputs: dict[str, Path] = {}
+    for item in queue.get_items(job_id):
+        for output in (item.get("result") or {}).get("outputs", []):
+            relpath = str(output.get("path", ""))
+            candidate = (out_dir / relpath).resolve()
+            if relpath and candidate.is_relative_to(out_dir):
+                outputs[relpath] = candidate
+    return outputs
 
 
 @router.get("/jobs/{job_id}/archive")
@@ -550,13 +573,11 @@ def job_archive(request: Request, job_id: str) -> StreamingResponse:
         raise HTTPException(status_code=409, detail="job is still running")
     queue = _queue(request)
     out_dir = Path(job["output_dir"]).resolve()
-    entries: dict[str, Path | bytes] = {}
-    for item in queue.get_items(job_id):
-        for output in (item.get("result") or {}).get("outputs", []):
-            relpath = str(output.get("path", ""))
-            candidate = (out_dir / relpath).resolve()
-            if relpath and candidate.is_relative_to(out_dir) and candidate.is_file():
-                entries[relpath] = candidate
+    entries: dict[str, Path | bytes] = {
+        relpath: candidate
+        for relpath, candidate in _job_outputs(queue, job_id, out_dir).items()
+        if candidate.is_file()
+    }
     if queue.wants_manifest_file(job["recipe"]) and MANIFEST_NAME not in entries:
         entries[MANIFEST_NAME] = _manifest_bytes(queue, job_id, out_dir / MANIFEST_NAME)
     filename = f"batchroom-{job_id}.zip"
@@ -587,6 +608,27 @@ def _manifest_bytes(queue: JobQueue, job_id: str, on_disk: Path) -> bytes:
 @router.get("/events")
 async def events_stream(request: Request) -> StreamingResponse:
     bus = request.app.state.events
+    actor = actor_of(request)
+    jobs = _queue(request)
+    owned: dict[str, bool] = {}  # job id -> may this member see its events
+
+    async def visible(event: dict) -> bool:
+        """Members only get events of their own jobs (job ids must not leak)."""
+        if actor.is_admin:
+            return True
+        job = event.get("job")
+        job_id = job.get("id") if isinstance(job, dict) else event.get("job_id")
+        if job_id is None:  # model.* and other non-job events
+            return True
+        if isinstance(job, dict):
+            owned[job_id] = job.get("user_id") == actor.user_id
+        elif job_id not in owned:
+            try:
+                found = await asyncio.to_thread(jobs.get_job, job_id)
+            except JobError:
+                return False  # e.g. job.deleted of a job never seen here
+            owned[job_id] = found.get("user_id") == actor.user_id
+        return owned[job_id]
 
     async def generator():
         queue = bus.subscribe()
@@ -597,7 +639,8 @@ async def events_stream(request: Request) -> StreamingResponse:
                     break
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield sse_format(event)
+                    if await visible(event):
+                        yield sse_format(event)
                 except TimeoutError:
                     yield ": keepalive\n\n"
         finally:
