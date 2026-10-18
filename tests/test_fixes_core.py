@@ -145,3 +145,14 @@ class TestEcomPackshot:
         for name in ("web-2048", "web-1024"):
             corner = by_preset[name][0, 0]
             assert corner[3] == 255 and corner[:3].min() > 245, name
+
+
+def test_long_original_names_fit_the_filesystem(tmp_path):
+    from batchroom.core.output_naming import plan_relpath
+
+    original = "ü" * 200  # 400 UTF-8 bytes, beyond any filesystem's 255-byte name limit
+    rel = plan_relpath(pattern=None, structure="flat", preset="web-2048", ext=".jpg",
+                       values={"original": original, "preset": "web-2048"})
+    assert len(rel.encode()) <= 210
+    rel.encode().decode()  # still valid UTF-8
+    (tmp_path / (rel + ".part")).write_bytes(b"x")  # the atomic write's temp name fits too

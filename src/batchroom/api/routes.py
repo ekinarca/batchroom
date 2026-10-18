@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import shutil
 import threading
@@ -35,6 +36,7 @@ from ..queue.jobs import JobQueue, new_job_id
 from .archive import stream_zip
 from .auth import actor_of, features, require_admin
 
+log = logging.getLogger("batchroom.api")
 router = APIRouter()
 open_router = APIRouter()  # unauthenticated: i18n only (login screen needs strings)
 
@@ -275,6 +277,11 @@ def pull_model(request: Request, model_id: str, body: PullBody | None = None) ->
         except BatchroomError as exc:
             events.publish_from_thread(
                 "model.error", {"model": model_id, "error": exc.message, "hint": exc.hint}
+            )
+        except Exception as exc:  # disk full, permissions...: the UI must still hear of it
+            log.exception("pulling model %s failed", model_id)
+            events.publish_from_thread(
+                "model.error", {"model": model_id, "error": str(exc) or type(exc).__name__, "hint": None}
             )
         finally:
             pulling.discard(model_id)

@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -130,7 +131,9 @@ class ModelManager:
                 hint="pass allow_unpinned (CLI: --allow-unpinned) to download and pin it locally",
             )
         log.info("downloading %s from %s", spec.id, spec.url)
-        tmp = path.with_suffix(".onnx.part")
+        # per-process name: `batchroom models pull` next to a running server
+        # must not interleave two downloads into one file
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.part")
         hasher = hashlib.sha256()
         done = 0
         try:
