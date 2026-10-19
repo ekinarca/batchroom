@@ -19,6 +19,9 @@ output:                    # optional
   keep_metadata: false     # EXIF is stripped unless true
 ```
 
+`manifest`, `lossless` and `keep_metadata` take `true`/`false` only; a
+quoted `"false"` is an error, not a truthy string.
+
 Validation is strict: unknown ops, unknown parameters and malformed
 values are rejected at load time with the recipe name and step number.
 User recipes live in `/data/recipes/*.yaml` and override built-ins with
@@ -96,19 +99,24 @@ Set the output encoding for the single-output path.
 | param | default | notes |
 |---|---|---|
 | `format` | — | `jpg`, `png`, `webp`, `avif`, `heic`, `tiff`, `bmp` |
-| `quality` | `90` | 1–100 (lossy formats) |
-| `lossless` | `false` | WebP lossless |
-| `keep_metadata` | `false` | carry EXIF through (privacy: off by default) |
+| `quality` | `output.quality` (`90`) | 1–100 (lossy formats) |
+| `lossless` | `output.lossless` (`false`) | WebP lossless |
+| `keep_metadata` | `output.keep_metadata` (`false`) | carry EXIF through (privacy: off by default) |
+
+Parameters a `convert` step leaves out keep the recipe's `output:` values.
 
 ### `preset-pack`
 
-Fan out to multiple outputs. One per recipe. Each preset:
+Fan out to multiple outputs. One per recipe. Only `rename` and
+`strip-metadata` may follow it: the presets are already sized when it
+runs, so a later pixel or format step is rejected at load time instead of
+being silently ignored. Each preset:
 
 | field | default | notes |
 |---|---|---|
 | `name` | — | slug, becomes the folder (per-preset-folder) and `{preset}` |
 | `size` | — | `"2000x2000"` |
-| `format` | `jpg` | any convert format |
+| `format` | `jpg` | any convert format (WebP: at most 16383 px per side) |
 | `quality` | `90` | |
 | `lossless` | `false` | |
 | `fit` | `pad` | same modes as resize |

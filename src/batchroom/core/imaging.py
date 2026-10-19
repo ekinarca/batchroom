@@ -134,27 +134,50 @@ def parse_aspect(value: str) -> tuple[int, int] | None:
 # ---------------------------------------------------------------------------
 
 
-def resize_rgba(pixels: np.ndarray, width: int, height: int) -> np.ndarray:
-    """High-quality Lanczos resample (premultiplied to avoid halo artifacts)."""
+def resize_rgba(
+    pixels: np.ndarray,
+    width: int,
+    height: int,
+    box: tuple[float, float, float, float] | None = None,
+) -> np.ndarray:
+    """High-quality Lanczos resample in premultiplied float (no halo artifacts).
+
+    ``box`` resamples only that source region (x0, y0, x1, y1; fractional
+    edges allowed), so a crop never needs a full-size intermediate."""
     pixels = _ensure_rgba(pixels)
     h, w = pixels.shape[:2]
-    if (w, h) == (width, height):
+    if (w, h) == (width, height) and box in (None, (0, 0, w, h)):
         return pixels.copy()
     if width < 1 or height < 1:
         raise OpError(f"invalid target size {width}x{height}")
-    # Premultiply so transparent-pixel RGB garbage doesn't bleed into edges.
-    f = pixels.astype(np.float32)
-    alpha = f[:, :, 3:4] / 255.0
-    f[:, :, :3] *= alpha
-    pil = Image.fromarray(np.clip(np.rint(f), 0, 255).astype(np.uint8), "RGBA")
-    pil = pil.resize((width, height), Image.Resampling.LANCZOS)
-    out = np.asarray(pil, dtype=np.float32)
-    out_alpha = out[:, :, 3:4]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        rgb = np.where(out_alpha > 0, out[:, :, :3] / (out_alpha / 255.0), 0)
+    # Premultiply once, in float, so transparent-pixel RGB garbage doesn't
+    # bleed into edges. Each channel is resampled as a 32-bit float image:
+    # handing Pillow an RGBA image would premultiply a second time (light
+    # fringes on every cut-out) and round the premultiplied values to 8 bits.
+    alpha = pixels[:, :, 3].astype(np.float32)
+    opaque = bool((pixels[:, :, 3] == 255).all())
+
+    def channel(plane: np.ndarray) -> np.ndarray:
+        img = Image.fromarray(np.ascontiguousarray(plane, dtype=np.float32), "F")
+        return np.asarray(img.resize((width, height), Image.Resampling.LANCZOS, box=box))
+
     result = np.empty((height, width, 4), dtype=np.uint8)
-    result[:, :, :3] = np.clip(np.rint(rgb), 0, 255).astype(np.uint8)
-    result[:, :, 3] = np.clip(np.rint(out_alpha[:, :, 0]), 0, 255).astype(np.uint8)
+    if opaque:
+        for c in range(3):
+            result[:, :, c] = np.clip(np.rint(channel(pixels[:, :, c])), 0, 255)
+        result[:, :, 3] = 255
+        return result
+    # Unpremultiply by the unclipped alpha: Lanczos rings both by the same
+    # factor, so their ratio stays true to the source colour at hard edges.
+    out_alpha = channel(alpha)
+    visible = out_alpha >= 0.5  # rounds to alpha >= 1
+    safe_alpha = np.where(visible, out_alpha, 1.0)
+    scale = alpha / 255.0
+    for c in range(3):
+        premult = channel(pixels[:, :, c].astype(np.float32) * scale)
+        value = np.where(visible, premult * 255.0 / safe_alpha, 0.0)
+        result[:, :, c] = np.clip(np.rint(value), 0, 255)
+    result[:, :, 3] = np.clip(np.rint(out_alpha), 0, 255)
     return result
 
 
@@ -280,7 +303,10 @@ def resize_to_box(
         draw_w, draw_h = fit_dimensions(w, h, target_w, target_h, "contain")
         return resize_rgba(pixels, draw_w, draw_h)
     if mode == "cover":
-        draw_w, draw_h = fit_dimensions(w, h, target_w, target_h, "cover")
-        scaled = resize_rgba(pixels, draw_w, draw_h)
-        return crop_center(scaled, target_w, target_h)
+        # Crop in source space, then resample straight to the box: scaling the
+        # whole image first made a 2000x4 strip a 1,000,000x2000 intermediate.
+        scale = max(target_w / w, target_h / h)
+        crop_w, crop_h = min(w, target_w / scale), min(h, target_h / scale)
+        x0, y0 = (w - crop_w) / 2, (h - crop_h) / 2
+        return resize_rgba(pixels, target_w, target_h, box=(x0, y0, x0 + crop_w, y0 + crop_h))
     return resize_rgba(pixels, target_w, target_h)  # stretch

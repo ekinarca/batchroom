@@ -41,6 +41,8 @@ _ALLOWED_TOP_KEYS = {"name", "description", "version", "input", "steps", "output
 _ALLOWED_OUTPUT_KEYS = {"structure", "manifest", "format", "quality", "lossless", "keep_metadata"}
 _ALLOWED_INPUT_KEYS = {"formats"}
 _STRUCTURES = {"per-preset-folder", "flat"}
+# steps that still act after preset-pack (both are applied when files are written)
+_AFTER_PRESET_PACK = {"rename", "strip-metadata"}
 
 
 @dataclass
@@ -179,6 +181,19 @@ def parse_recipe(
     if sum(1 for s in steps if s.op.name == "preset-pack") > 1:
         # PresetPackOp refuses this per item; fail at load, not mid-batch
         raise RecipeError("only one preset-pack step is allowed per recipe", recipe=name)
+    pack_at = next((i for i, s in enumerate(steps) if s.op.name == "preset-pack"), None)
+    if pack_at is not None:
+        for i, step in enumerate(steps[pack_at + 1 :], start=pack_at + 1):
+            # the presets are already sized and encoded-to-be: a later pixel or
+            # format step would be silently ignored
+            if step.op.name not in _AFTER_PRESET_PACK:
+                raise RecipeError(
+                    f"'{step.op.name}' has no effect after preset-pack",
+                    recipe=name,
+                    step=i,
+                    hint=f"move it before preset-pack (only {', '.join(sorted(_AFTER_PRESET_PACK))}"
+                    " may follow it)",
+                )
 
     # ---- output -------------------------------------------------------
     out_raw = _require_mapping(data.get("output"), "'output'", name)
@@ -206,14 +221,15 @@ def parse_recipe(
     quality = out_raw.get("quality", 90)
     if isinstance(quality, bool) or not isinstance(quality, int) or not (1 <= quality <= 100):
         raise RecipeError("output.quality must be an integer 1-100", recipe=name)
-    output = OutputSpec(
-        structure=structure,
-        manifest=bool(out_raw.get("manifest", True)),
-        format=out_format,
-        quality=quality,
-        lossless=bool(out_raw.get("lossless", False)),
-        keep_metadata=bool(out_raw.get("keep_metadata", False)),
-    )
+    flags = {}
+    for key, default in (("manifest", True), ("lossless", False), ("keep_metadata", False)):
+        value = out_raw.get(key, default)
+        if not isinstance(value, bool):  # "false" in quotes is a truthy string
+            raise RecipeError(
+                f"output.{key} must be true or false, got {value!r}", recipe=name
+            )
+        flags[key] = value
+    output = OutputSpec(structure=structure, format=out_format, quality=quality, **flags)
 
     try:
         version = int(data.get("version", 1))

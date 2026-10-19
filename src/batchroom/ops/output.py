@@ -24,6 +24,7 @@ _UNSAFE_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 # Filesystems cap a name at 255 bytes; leave room for the extension, a
 # "-N" collision suffix and the ".part" of the atomic write.
 _MAX_NAME_BYTES = 200
+WEBP_MAX_SIDE = 16383  # libwebp's hard limit
 
 
 def validate_pattern(pattern: str) -> str:
@@ -73,9 +74,14 @@ class ConvertOp(Op):
 
     def apply(self, state: ItemState, params: ConvertParams, ctx: PipelineContext) -> ItemState:
         state.default_format = normalize_format(params.format)
-        state.default_quality = params.quality
-        state.default_lossless = params.lossless
-        state.keep_metadata = params.keep_metadata
+        # only what the step spells out: the rest keeps the recipe's output: values
+        given = params.model_fields_set
+        if "quality" in given:
+            state.default_quality = params.quality
+        if "lossless" in given:
+            state.default_lossless = params.lossless
+        if "keep_metadata" in given:
+            state.keep_metadata = params.keep_metadata
         return state
 
 
@@ -113,13 +119,15 @@ class StripMetadataOp(Op):
     def apply(
         self, state: ItemState, params: StripMetadataParams, ctx: PipelineContext
     ) -> ItemState:
-        img = state.image
+        # after a preset-pack the outputs are already planned: strip those too
+        for img in [state.image, *(p.image for p in state.planned)]:
+            if params.exif:
+                img.exif = None
+            if params.icc:
+                img.icc_profile = None
         if params.exif:
-            img.exif = None
             state.keep_metadata = False
-        if params.icc:
-            img.icc_profile = None
-        img.step_log.append("strip-metadata")
+        state.image.step_log.append("strip-metadata")
         return state
 
 
@@ -135,8 +143,12 @@ class PresetSpec(OpParams):
 
     @model_validator(mode="after")
     def _check(self):
-        imaging.parse_size(self.size)
+        width, height = imaging.parse_size(self.size)
         fmt = normalize_format(self.format)
+        if fmt == "webp" and max(width, height) > WEBP_MAX_SIDE:
+            raise ValueError(
+                f"preset '{self.name}': WebP images are at most {WEBP_MAX_SIDE} px per side"
+            )
         if self.background is not None:
             color = imaging.parse_color(self.background)
             if color[3] < 255 and fmt not in ALPHA_FORMATS:

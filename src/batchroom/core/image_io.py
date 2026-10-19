@@ -14,6 +14,7 @@ default because dropping them shifts colors.
 from __future__ import annotations
 
 import io
+import math
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -137,6 +138,17 @@ class ImageData:
         return img
 
 
+def _valid_dpi(dpi) -> tuple[float, float] | None:
+    """A TIFF with XResolution 0/0 reads as (nan, nan), which no encoder accepts."""
+    try:
+        x, y = (float(v) for v in dpi)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(x) and math.isfinite(y) and x > 0 and y > 0):
+        return None
+    return (x, y)
+
+
 def _ensure_rgba(pixels: np.ndarray) -> np.ndarray:
     if pixels.dtype != np.uint8:
         raise ImageIOError(f"internal: expected uint8 pixels, got {pixels.dtype}")
@@ -199,12 +211,18 @@ def load_image(path: str | Path) -> ImageData:
             if source_format == "heif":
                 source_format = "heic"
             # Respect camera orientation, then drop the tag by re-reading exif below.
+            try:
+                quarter_turn = pil.getexif().get(0x0112) in (5, 6, 7, 8)
+            except Exception:  # corrupt EXIF: exif_transpose copes, so do we
+                quarter_turn = False
             oriented = ImageOps.exif_transpose(pil)
             if oriented is None:  # pragma: no cover - PIL returns image in practice
                 oriented = pil
             icc = oriented.info.get("icc_profile") or None
             exif = oriented.info.get("exif") or None
-            dpi = oriented.info.get("dpi")
+            dpi = _valid_dpi(pil.info.get("dpi"))
+            if dpi and quarter_turn:
+                dpi = (dpi[1], dpi[0])  # the axes swapped with the pixels
             pixels = pil_to_rgba_array(oriented)
     except ImageIOError:
         raise
