@@ -68,6 +68,7 @@
   "recipes.user": "ユーザー",
   "recipes.new": "新規レシピ",
   "recipes.edit": "編集",
+  "recipes.view": "表示",
   "recipes.duplicate": "複製",
   "recipes.validate": "検証",
   "recipes.save": "レシピを保存",

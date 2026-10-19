@@ -247,11 +247,11 @@ class TestAuthFlows:
 
         limiter = _RateLimiter()
         for _ in range(5):
-            limiter.hit("1.2.3.4:admin@co.example")
-        assert limiter.blocked("1.2.3.4:admin@co.example")
+            assert limiter.reserve("1.2.3.4:admin@co.example") is not None
+        assert limiter.reserve("1.2.3.4:admin@co.example") is None
         for i in range(1001):  # the old table was wiped once it held 1000 keys
-            limiter.hit(f"1.2.3.4:spray{i}@co.example")
-        assert limiter.blocked("1.2.3.4:admin@co.example")
+            limiter.reserve(f"1.2.3.4:spray{i}@co.example")
+        assert limiter.reserve("1.2.3.4:admin@co.example") is None
 
     def test_member_job_isolation(self, multiuser_client):
         c = multiuser_client

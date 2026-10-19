@@ -692,13 +692,24 @@ function viewRecipes(main) {
       h("div", { class: "steps" }, steps),
       h("div", { class: "row" },
         r.models.length ? h("span", { class: "faint", style: "font-size:12px" }, `${t("recipes.models")}: ${r.models.join(", ")}`) : null,
-        h("button", { class: "btn small right", onclick: () => openRecipeEditor(r.name) }, t("recipes.edit")),
+        h("button", { class: "btn small right", onclick: () => openRecipeEditor(r.name) },
+          t(isAdmin() ? "recipes.edit" : "recipes.view")),
+        // recipes are shared by every user: only admins change them
+        isAdmin() && !r.builtin ? h("button", { class: "btn small danger", onclick: async () => {
+          if (await confirmModal(t("recipes.delete_confirm"))) {
+            try { await api(`/api/recipes/${encodeURIComponent(r.name)}`, { method: "DELETE" }); }
+            catch (err) { toast(err.message, "error"); }
+            refreshRecipes().then(render);
+          }
+        } }, t("common.delete")) : null,
       ),
     ));
   }
-  main.append(grid,
-    h("div", { class: "row", style: "margin-top:16px" },
+  main.append(grid);
+  if (isAdmin()) {
+    main.append(h("div", { class: "row", style: "margin-top:16px" },
       h("button", { class: "btn sig", onclick: () => openRecipeEditor(null) }, t("recipes.new"))));
+  }
 }
 
 async function openRecipeEditor(name) {
@@ -710,7 +721,8 @@ async function openRecipeEditor(name) {
       source = r.source; builtin = r.builtin;
     } catch (err) { toast(err.message, "error"); return; }
   }
-  const ta = h("textarea", { rows: 18, spellcheck: "false", dir: "ltr" }, source);
+  const editable = isAdmin();
+  const ta = h("textarea", { rows: 18, spellcheck: "false", dir: "ltr", readonly: !editable }, source);
   const status = h("div", { class: "dim", style: "min-height:1.4em;font-size:12.5px" });
   const validate = async () => {
     try {
@@ -726,12 +738,12 @@ async function openRecipeEditor(name) {
   const close = closeModal;
   openModal(h("div", { class: "modal", style: "max-width:720px" },
     h("h1", { style: "font-size:16px;margin-bottom:10px" }, t("recipes.editor_title")),
-    builtin ? h("p", { class: "dim", style: "font-size:12.5px" }, t("recipes.builtin_note")) : null,
+    builtin && editable ? h("p", { class: "dim", style: "font-size:12.5px" }, t("recipes.builtin_note")) : null,
     ta,
     h("div", { class: "row", style: "margin-top:10px" },
       status,
       h("button", { class: "btn small right", onclick: validate }, t("recipes.validate")),
-      h("button", { class: "btn small sig", onclick: async () => {
+      !editable ? null : h("button", { class: "btn small sig", onclick: async () => {
         if (!(await validate())) return;
         try {
           await api("/api/recipes", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -949,7 +961,7 @@ function viewWatch(main) {
     main.append(grid);
   }
   main.append(
-    h("div", { class: "row", style: "margin-top:16px" },
+    !isAdmin() ? "" : h("div", { class: "row", style: "margin-top:16px" },
       h("button", { class: "btn", onclick: async () => {
         try {
           await api("/api/watch/reload", { method: "POST" }); await refreshSystem(); render(); toast(t("common.ok"), "ok");

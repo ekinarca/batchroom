@@ -191,21 +191,35 @@ class _RateLimiter:
             return None
         return bucket
 
-    def blocked(self, key: str) -> bool:
-        with self._lock:
-            bucket = self._recent(key, time.monotonic())
-            return bucket is not None and len(bucket) >= self.max_attempts
-
-    def hit(self, key: str) -> None:
+    def reserve(self, key: str) -> float | None:
+        """Check and count an attempt in one step, so a burst of concurrent
+        requests can't all pass the check before any failure is recorded.
+        Returns the attempt's stamp (hand it to ``release`` if the attempt
+        turns out not to be a failure), or None when the key is blocked."""
         now = time.monotonic()
         with self._lock:
             bucket = self._recent(key, now)
+            if bucket is not None and len(bucket) >= self.max_attempts:
+                return None
             if bucket is None:
                 bucket = self.buckets[key] = deque()
             bucket.append(now)
             self.buckets.move_to_end(key)
             while len(self.buckets) > self.max_keys:  # evict least recently failing
                 self.buckets.popitem(last=False)
+            return now
+
+    def release(self, key: str, stamp: float) -> None:
+        with self._lock:
+            bucket = self.buckets.get(key)
+            if bucket is None:
+                return
+            try:
+                bucket.remove(stamp)
+            except ValueError:
+                return
+            if not bucket:
+                del self.buckets[key]
 
 
 # 5 failures/min per account+source; 30/min per source across all accounts,
@@ -233,13 +247,21 @@ def login(request: Request, response: Response, body: LoginBody) -> dict:
         raise HTTPException(status_code=400, detail="multi-user mode is not set up")
     client = request.client.host if request.client else "?"
     account_key = f"{client}:{body.email.strip().lower()}"
-    if _source_limiter.blocked(client) or _login_limiter.blocked(account_key):
+    # Count the attempt as a failure up front and take it back on success:
+    # checking first and counting after the slow password hash let a burst
+    # of concurrent requests through before the first failure was recorded.
+    source_stamp = _source_limiter.reserve(client)
+    if source_stamp is None:
+        raise HTTPException(status_code=429, detail="too many attempts — wait a minute")
+    account_stamp = _login_limiter.reserve(account_key)
+    if account_stamp is None:
+        _source_limiter.release(client, source_stamp)
         raise HTTPException(status_code=429, detail="too many attempts — wait a minute")
     user = authenticate(app.state.db, body.email, body.password)
     if user is None:
-        _login_limiter.hit(account_key)
-        _source_limiter.hit(client)
         raise HTTPException(status_code=401, detail="invalid email or password")
+    _login_limiter.release(account_key, account_stamp)
+    _source_limiter.release(client, source_stamp)
     token = create_session(app.state.db, user["id"])
     response.set_cookie(
         SESSION_COOKIE,

@@ -299,8 +299,11 @@ class Watcher:
                 webhook_url=entry.webhook,
                 skipped=skipped,
             )
-        except BatchroomError as exc:
-            log.error("watch: submit failed: %s", exc)
+        except Exception as exc:  # incl. "database is locked": never strand files in intake
+            if isinstance(exc, BatchroomError):
+                log.error("watch: submit failed: %s", exc)
+            else:
+                log.exception("watch: submit failed")
             for path in moved:
                 self._move_to(path, entry.folder / FAILED_DIR)
             self._cleanup_intake(intake)
@@ -314,7 +317,11 @@ class Watcher:
             try:
                 job = self.queue.get_job(job_id)
             except JobError:
-                self._active_jobs.pop(job_id, None)
+                # deleted before we saw it finish: settle its sources now, or
+                # the next start would find them in intake and run them again
+                entry = self._active_jobs.pop(job_id, None)
+                if entry is not None:
+                    self._disposition(job_id, entry)
                 continue
             if job["status"] in ("done", "cancelled"):
                 entry = self._active_jobs.pop(job_id)

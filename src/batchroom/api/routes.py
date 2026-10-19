@@ -34,7 +34,7 @@ from ..ops.base import all_ops
 from ..queue.events import sse_format
 from ..queue.jobs import JobQueue, new_job_id
 from .archive import stream_zip
-from .auth import actor_of, features, require_admin
+from .auth import actor_of, features, require_admin, users_exist
 
 log = logging.getLogger("batchroom.api")
 router = APIRouter()
@@ -74,8 +74,11 @@ def _webhook_or_400(url: str | None) -> str | None:
     url = (url or "").strip()
     if not url:
         return None
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.netloc:
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # e.g. an unclosed IPv6 bracket
+        parts = None
+    if parts is None or parts.scheme not in ("http", "https") or not parts.netloc:
         raise HTTPException(status_code=400, detail="webhook_url must be an http(s) URL")
     return url
 
@@ -98,7 +101,7 @@ def system_info(request: Request) -> dict:
         "workers": settings.workers,
         "queue": queue.queue_depth(),
         "uptime_seconds": int(time.time() - request.app.state.started_at),
-        "auth_required": bool(settings.api_key),
+        "auth_required": bool(settings.api_key) or users_exist(request.app),
         "formats": {
             fmt: format_available(fmt) for fmt in sorted(set(FORMATS) - {"jpeg"})
         },
@@ -166,16 +169,28 @@ def _user_recipe_path(request: Request, name: str) -> Path | None:
     """The file in the user recipe dir that currently defines ``name``.
 
     Its filename may differ from the recipe name (dropped in by hand); edits
-    must go back to that file, or the old file keeps shadowing them."""
+    must go back to that file, or the old file keeps shadowing them.
+
+    A recipe that comes from an extra ``BATCHROOM_RECIPE_DIRS`` folder wins
+    over the user dir, so writing or deleting there would report success
+    and change nothing: that answers 409 instead."""
     recipe = request.app.state.recipes.get(force=True).get(name)
     if recipe is None or recipe.path is None:
         return None
     user_dir = _settings(request).recipes_dir.resolve()
     path = recipe.path.resolve()
-    return path if path.parent == user_dir else None
+    if path.parent == user_dir:
+        return path
+    if not recipe.builtin:
+        raise HTTPException(
+            status_code=409,
+            detail=f"recipe '{name}' is defined in {path.parent}; edit it there",
+        )
+    return None
 
 
-@router.post("/recipes", status_code=201)
+# Recipes and the watch config are shared by every user, like model weights.
+@router.post("/recipes", status_code=201, dependencies=[Depends(require_admin)])
 def save_recipe(request: Request, body: RecipeBody) -> dict:
     settings = _settings(request)
     try:
@@ -191,11 +206,12 @@ def save_recipe(request: Request, body: RecipeBody) -> dict:
     return {"saved": recipe.name, "path": str(path)}
 
 
-@router.delete("/recipes/{name}")
+@router.delete("/recipes/{name}", dependencies=[Depends(require_admin)])
 def delete_recipe(request: Request, name: str) -> dict:
     settings = _settings(request)
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", name):
         raise HTTPException(status_code=400, detail="invalid recipe name")
+    _user_recipe_path(request, name)  # 409 for a recipe from an extra recipe dir
     removed = False
     for suffix in (".yaml", ".yml"):
         path = settings.recipes_dir / f"{name}{suffix}"
@@ -372,27 +388,32 @@ async def create_job(request: Request) -> dict:
             raise RequestValidationError(exc.errors(include_url=False)) from None
         recipe = _resolve_recipe(request, body.recipe)
         webhook_url = _webhook_or_400(body.webhook_url)
-        paths = [Path(p).expanduser() for p in body.paths]
-        missing = [str(p) for p in paths if not _path_exists(p)]
-        if missing:
-            raise HTTPException(
-                status_code=400, detail=f"path(s) not found: {', '.join(missing[:5])}"
+        user_id = actor_of(request).user_id
+        priority = _clamp_priority(request, body.priority)
+
+        def intake() -> dict:
+            # stat + walk of a NAS tree and the item inserts: off the event loop
+            paths = [_expand_or_400(p) for p in body.paths]
+            missing = [str(p) for p in paths if not _path_exists(p)]
+            if missing:
+                raise HTTPException(
+                    status_code=400, detail=f"path(s) not found: {', '.join(missing[:5])}"
+                )
+            output_dir = _expand_or_400(body.output_dir) if body.output_dir else None
+            # an output folder inside an input folder must not feed earlier results back in
+            files, skipped = queue.collect_input_files(
+                paths, recipe, exclude_dirs=(output_dir,) if output_dir else ()
             )
-        output_dir = Path(body.output_dir).expanduser() if body.output_dir else None
-        # an output folder inside an input folder must not feed earlier results back in
-        files, skipped = queue.collect_input_files(
-            paths, recipe, exclude_dirs=(output_dir,) if output_dir else ()
-        )
-        try:
-            job = queue.submit(
-                recipe, files, source="api", output_dir=output_dir,
-                webhook_url=webhook_url, skipped=skipped,
-                user_id=actor_of(request).user_id,
-                priority=_clamp_priority(request, body.priority),
-            )
-        except BatchroomError as exc:
-            raise _error(exc) from exc
-        return job
+            try:
+                return queue.submit(
+                    recipe, files, source="api", output_dir=output_dir,
+                    webhook_url=webhook_url, skipped=skipped,
+                    user_id=user_id, priority=priority,
+                )
+            except BatchroomError as exc:
+                raise _error(exc) from exc
+
+        return await asyncio.to_thread(intake)
 
     form = await request.form(max_files=MAX_UPLOAD_FILES, max_fields=MAX_UPLOAD_FILES + 100)
     recipe_name = str(form.get("recipe") or "")
@@ -416,8 +437,9 @@ async def create_job(request: Request) -> dict:
             target = job_dir / "in" / f"{i:04d}" / clean
             await asyncio.to_thread(_copy_upload, upload.file, target, limit, clean)
             saved.append(target)
-        files, skipped = queue.collect_input_files(saved, recipe)
-        job = queue.submit_with_id(
+        files, skipped = await asyncio.to_thread(queue.collect_input_files, saved, recipe)
+        job = await asyncio.to_thread(
+            queue.submit_with_id,
             job_id, recipe, files, source="api", webhook_url=webhook_url, skipped=skipped,
             user_id=actor_of(request).user_id,
             priority=_clamp_priority(request, form.get("priority")),
@@ -430,6 +452,13 @@ async def create_job(request: Request) -> dict:
             raise _error(exc) from exc
         raise
     return job
+
+
+def _expand_or_400(raw: str) -> Path:
+    try:
+        return Path(raw).expanduser()
+    except RuntimeError:  # ~nosuchuser/...: no home directory to expand to
+        raise HTTPException(status_code=400, detail=f"cannot expand path: {raw}") from None
 
 
 def _path_exists(path: Path) -> bool:
@@ -454,7 +483,7 @@ def list_jobs(request: Request, limit: int = 50, offset: int = 0) -> dict:
     user_filter = None if actor.is_admin else (actor.user_id or -1)
     return {
         "jobs": _queue(request).list_jobs(
-            limit=limit, offset=max(0, offset), user_id=user_filter
+            limit=limit, offset=max(0, min(offset, 2**62)), user_id=user_filter
         )
     }
 
@@ -629,11 +658,13 @@ async def events_stream(request: Request) -> StreamingResponse:
             return True
         if isinstance(job, dict):
             owned[job_id] = job.get("user_id") == actor.user_id
+        elif "user_id" in event:  # job.deleted: the row is already gone
+            owned[job_id] = event["user_id"] == actor.user_id
         elif job_id not in owned:
             try:
                 found = await asyncio.to_thread(jobs.get_job, job_id)
             except JobError:
-                return False  # e.g. job.deleted of a job never seen here
+                return False
             owned[job_id] = found.get("user_id") == actor.user_id
         return owned[job_id]
 
@@ -670,7 +701,7 @@ def watch_status(request: Request) -> dict:
     return request.app.state.watcher.status()
 
 
-@router.post("/watch/reload")
+@router.post("/watch/reload", dependencies=[Depends(require_admin)])
 def watch_reload(request: Request) -> dict:
     watcher = request.app.state.watcher
     watcher.reload_config()

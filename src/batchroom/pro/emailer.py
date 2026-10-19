@@ -5,7 +5,10 @@ Configured with one env var::
     BATCHROOM_SMTP_URL=smtp://user:pass@mail.example.com:587?tls=starttls&from=batchroom@example.com
 
 ``tls``: ``starttls`` (default for :587), ``ssl`` (default for :465) or
-``none``. Recipients: the submitting user's email when multi-user is on,
+``none``. The server certificate is verified against the system CAs;
+``verify=0`` turns that off for an internal relay with a self-signed
+certificate (the credentials are then exposed to anyone on the path).
+Recipients: the submitting user's email when multi-user is on,
 else ``BATCHROOM_NOTIFY_EMAIL``. Sending happens on a daemon thread and can
 never fail a job.
 """
@@ -14,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import smtplib
+import ssl
 import threading
 from dataclasses import dataclass
 from email.message import EmailMessage
@@ -30,6 +34,7 @@ class SmtpConfig:
     password: str | None
     tls: str  # starttls | ssl | none
     sender: str
+    verify: bool = True  # check the server's TLS certificate and hostname
 
     @classmethod
     def from_url(cls, url: str) -> SmtpConfig | None:
@@ -47,6 +52,9 @@ class SmtpConfig:
             sender = query.get("from") or username
             if not parsed.hostname or not sender:
                 raise ValueError("smtp url needs a host and a 'from' (or username)")
+            verify = query.get("verify", "1").lower()
+            if verify not in ("1", "0", "true", "false", "yes", "no"):
+                raise ValueError(f"invalid verify value '{verify}'")
             return cls(
                 host=parsed.hostname,
                 port=port,
@@ -54,6 +62,7 @@ class SmtpConfig:
                 password=unquote(parsed.password) if parsed.password else None,
                 tls=tls,
                 sender=sender,
+                verify=verify in ("1", "true", "yes"),
             )
         except ValueError as exc:
             log.error("invalid BATCHROOM_SMTP_URL: %s", exc)
@@ -109,15 +118,26 @@ class EmailNotifier:
         message.set_content("\n".join(line for line in lines if line is not None))
         return message
 
+    def _tls_context(self) -> ssl.SSLContext:
+        # smtplib's own default context checks neither the CA nor the
+        # hostname: anyone on the path could collect the SMTP password
+        context = ssl.create_default_context()
+        if not self.config.verify:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        return context
+
     def _deliver(self, message: EmailMessage) -> None:
         cfg = self.config
         if cfg.tls == "ssl":
-            with smtplib.SMTP_SSL(cfg.host, cfg.port, timeout=20) as smtp:
+            with smtplib.SMTP_SSL(
+                cfg.host, cfg.port, timeout=20, context=self._tls_context()
+            ) as smtp:
                 self._login_and_send(smtp, message)
         else:
             with smtplib.SMTP(cfg.host, cfg.port, timeout=20) as smtp:
                 if cfg.tls == "starttls":
-                    smtp.starttls()
+                    smtp.starttls(context=self._tls_context())
                 self._login_and_send(smtp, message)
 
     def _login_and_send(self, smtp, message: EmailMessage) -> None:
