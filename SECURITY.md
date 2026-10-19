@@ -25,7 +25,8 @@ internet.
   spraying many emails doesn't reset the counter), and job-level
   ownership — members can only see and download their own jobs
   (non-owners get 404, not 403, so job ids don't leak); only admins can
-  delete the shared model weights. The env API key keeps working as an
+  change what every user shares: delete model weights, save or delete
+  recipes, and reload the watch-folder config. The env API key keeps working as an
   admin equivalent (compared in constant time) so
   existing automations survive the upgrade. We deliberately did not add
   CSRF tokens: state-changing routes are JSON/fetch-only, cookies are

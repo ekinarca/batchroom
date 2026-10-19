@@ -93,6 +93,24 @@ class JobNames:
             return candidate
 
 
+def inputs_inside(out_dir: Path, sources) -> set[str]:
+    """Output-style relpaths of the input files that live inside ``out_dir``.
+
+    Seed ``JobNames`` with them: an output folder that is (or contains) an
+    input folder must never write a result over an original."""
+    try:
+        root = Path(out_dir).resolve()
+    except OSError:
+        return set()
+    taken: set[str] = set()
+    for source in sources:
+        try:
+            taken.add(Path(source).resolve().relative_to(root).as_posix())
+        except (OSError, ValueError):  # outside out_dir (the usual case)
+            continue
+    return taken
+
+
 def _write_atomic(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".part")

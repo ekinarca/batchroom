@@ -68,6 +68,7 @@
   "recipes.user": "Użytkownika",
   "recipes.new": "Nowa receptura",
   "recipes.edit": "Edytuj",
+  "recipes.view": "Podgląd",
   "recipes.duplicate": "Duplikuj",
   "recipes.validate": "Sprawdź",
   "recipes.save": "Zapisz recepturę",

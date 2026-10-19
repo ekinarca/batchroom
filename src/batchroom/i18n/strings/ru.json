@@ -68,6 +68,7 @@
   "recipes.user": "Пользовательский",
   "recipes.new": "Новый рецепт",
   "recipes.edit": "Редактировать",
+  "recipes.view": "Просмотр",
   "recipes.duplicate": "Дублировать",
   "recipes.validate": "Проверить",
   "recipes.save": "Сохранить рецепт",

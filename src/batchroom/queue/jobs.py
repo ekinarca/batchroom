@@ -25,7 +25,7 @@ from ..core.errors import CancelledError, JobError
 from ..core.image_io import READ_EXTENSIONS
 from ..core.inputs import is_hidden_file_name, walk_files
 from ..core.manifest import MANIFEST_NAME, build_manifest, utc_now_iso, write_manifest
-from ..core.pipeline import ItemResult, JobNames, OutputRecord, process_item
+from ..core.pipeline import ItemResult, JobNames, OutputRecord, inputs_inside, process_item
 from ..core.recipe import Recipe
 from ..models.manager import ModelManager
 from ..ops.base import PipelineContext
@@ -195,9 +195,10 @@ class JobQueue:
         out_dir = output_dir or (self.settings.jobs_dir / job_id / "out")
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:  # unwritable/unmounted share: a clean error, not a crash
+        except (OSError, ValueError) as exc:  # unwritable share, NUL in the path...
+            reason = getattr(exc, "strerror", None) or exc
             raise JobError(
-                f"cannot create output folder {out_dir}: {exc.strerror or exc}",
+                f"cannot create output folder {out_dir!s}: {reason}",
                 hint="check that the output path exists and is writable",
             ) from exc
         now = _now()
@@ -351,7 +352,10 @@ class JobQueue:
         if job_dir.is_dir() and job_dir != jobs_root and job_dir.is_relative_to(jobs_root):
             shutil.rmtree(job_dir, ignore_errors=True)
         # API routes call this from a worker thread: never touch the loop's queues directly
-        self.events.publish_from_thread("job.deleted", {"job_id": job_id})
+        # user_id: the row is gone, so live clients can't look the owner up any more
+        self.events.publish_from_thread(
+            "job.deleted", {"job_id": job_id, "user_id": job.get("user_id")}
+        )
 
     # ------------------------------------------------------------------
     # dispatcher
@@ -429,13 +433,20 @@ class JobQueue:
         with self._names_lock:
             names = self._names.get(job_id)
             if names is None:
-                taken: set[str] = set()
                 with self.db.connect() as conn:
                     rows = conn.execute(
-                        "SELECT result_json FROM items WHERE job_id=? AND result_json IS NOT NULL",
-                        (job_id,),
+                        "SELECT source_path, result_json FROM items WHERE job_id=?", (job_id,)
                     ).fetchall()
+                    out_dir = conn.execute(
+                        "SELECT output_dir FROM jobs WHERE id=?", (job_id,)
+                    ).fetchone()
+                # an output_dir that is an input folder: results never replace originals
+                taken = inputs_inside(
+                    Path(out_dir["output_dir"]), [row["source_path"] for row in rows]
+                ) if out_dir else set()
                 for row in rows:
+                    if row["result_json"] is None:
+                        continue
                     try:
                         for output in json.loads(row["result_json"]).get("outputs", []):
                             taken.add(output["path"])

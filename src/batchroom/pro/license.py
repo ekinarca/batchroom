@@ -18,7 +18,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -66,8 +66,17 @@ class LicenseInfo:
     seats: int = 1
     key_id: str = ""
     valid: bool = False
-    expired: bool = False
     error: str | None = None
+    # Last day of the post-expiry grace period. ``expired`` is worked out on
+    # every read: a server that is never restarted must still see the date pass.
+    grace_until: date | None = None
+    today: date | None = field(default=None, repr=False)  # pinned by tests
+
+    @property
+    def expired(self) -> bool:
+        if self.grace_until is None:
+            return False
+        return (self.today or datetime.now(UTC).date()) > self.grace_until
 
     @property
     def active(self) -> bool:
@@ -150,14 +159,14 @@ def parse_license(
         return _fail(raw, "malformed seat count")
 
     expires = payload.get("expires")
-    expired = False
+    grace_until = None
     if expires is not None:
         try:
             expiry_date = date.fromisoformat(str(expires))
         except ValueError:
             return _fail(raw, "malformed expiry date")
         # 3-day grace so a renewal weekend never interrupts a production queue
-        expired = (today or datetime.now(UTC).date()) > expiry_date + timedelta(days=3)
+        grace_until = expiry_date + timedelta(days=3)
 
     return LicenseInfo(
         raw=raw,
@@ -169,7 +178,8 @@ def parse_license(
         seats=seats,
         key_id=key_id,
         valid=True,
-        expired=expired,
+        grace_until=grace_until,
+        today=today,
     )
 
 

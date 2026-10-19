@@ -62,6 +62,8 @@ Optional Pro configuration:
 ```bash
 BATCHROOM_SMTP_URL=smtp://user:pass@mail.example.com:587?from=batchroom@example.com
 BATCHROOM_NOTIFY_EMAIL=ops@example.com   # fallback recipient
+# The mail server's TLS certificate is verified; for an internal relay with a
+# self-signed certificate add &verify=0 to the URL.
 ```
 
 Priority per job: the **Queue priority** selector in the UI, or

@@ -69,7 +69,7 @@ def cmd_run(args) -> int:
     from .core.image_io import READ_EXTENSIONS
     from .core.inputs import is_hidden_file_name, walk_files
     from .core.manifest import build_manifest, utc_now_iso, write_manifest
-    from .core.pipeline import JobNames, process_item
+    from .core.pipeline import JobNames, inputs_inside, process_item
     from .core.recipe import discover_recipes, load_recipe_file, recipe_dirs
     from .models.manager import ModelManager
     from .ops.base import PipelineContext
@@ -90,6 +90,7 @@ def cmd_run(args) -> int:
 
     out_dir = Path(args.output).expanduser()
     files: list[Path] = []
+    seen: list[Path] = []  # skipped ones too: no output may replace any of them
     skipped = 0
     for raw in args.inputs:
         path = Path(raw).expanduser()
@@ -101,6 +102,7 @@ def cmd_run(args) -> int:
         else:
             print(f"error: input not found: {path}", file=sys.stderr)
             return 1
+        seen.extend(candidates)
         for candidate in candidates:
             ext = candidate.suffix.lower()
             if is_hidden_file_name(candidate.name) or ext not in READ_EXTENSIONS:
@@ -130,7 +132,7 @@ def cmd_run(args) -> int:
                 return 1
 
     started = utc_now_iso()
-    names = JobNames()
+    names = JobNames(inputs_inside(out_dir, seen))  # -o may be an input folder
     ctx = PipelineContext(
         recipe_name=recipe.name,
         job_id="cli",
@@ -462,6 +464,10 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except BatchroomError as exc:  # e.g. a malformed BATCHROOM_* variable
         print(f"error: {exc}" + (f"\n  hint: {exc.hint}" if exc.hint else ""), file=sys.stderr)
+        return 1
+    except OSError as exc:  # e.g. a data or output folder that can't be created
+        where = f": {exc.filename}" if exc.filename else ""
+        print(f"error: {exc.strerror or exc}{where}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)

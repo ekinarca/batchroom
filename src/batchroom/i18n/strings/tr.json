@@ -68,6 +68,7 @@
   "recipes.user": "Kullanıcı",
   "recipes.new": "Yeni reçete",
   "recipes.edit": "Düzenle",
+  "recipes.view": "Görüntüle",
   "recipes.duplicate": "Kopyala",
   "recipes.validate": "Doğrula",
   "recipes.save": "Reçeteyi kaydet",

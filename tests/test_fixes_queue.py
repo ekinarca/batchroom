@@ -159,3 +159,80 @@ def test_job_ids_have_room_for_busy_days():
     ids = {new_job_id() for _ in range(5000)}
     assert len(ids) == 5000
     assert all(len(i.rsplit("-", 1)[1]) == 10 for i in ids)
+
+
+FLAT_RECIPE = """
+name: flat-png
+steps:
+  - op: resize
+    size: 16x16
+  - op: convert
+    format: png
+output:
+  structure: flat
+  manifest: false
+"""
+
+
+class TestOutputFolderIsInputFolder:
+    def test_cli_never_overwrites_a_source(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BATCHROOM_DATA_DIR", str(tmp_path / "data"))
+        recipe = tmp_path / "flat.yaml"
+        recipe.write_text(FLAT_RECIPE, encoding="utf-8")
+        photos = tmp_path / "photos"
+        save_image(gradient_image(32, 32), photos / "a.png", "png")
+        original = (photos / "a.png").read_bytes()
+        assert main(["run", str(recipe), str(photos), "-o", str(photos)]) == 0
+        assert (photos / "a.png").read_bytes() == original
+        assert (photos / "a-2.png").is_file()
+
+    async def test_path_job_never_overwrites_a_source(self, queue, tmp_path, settings):
+        (settings.recipes_dir / "flat-png.yaml").write_text(FLAT_RECIPE, encoding="utf-8")
+        recipe = discover_recipes(recipe_dirs(settings))[0]["flat-png"]
+        photos = tmp_path / "photos"
+        save_image(gradient_image(32, 32), photos / "a.png", "png")
+        original = (photos / "a.png").read_bytes()
+        job = queue.submit(recipe, [photos / "a.png"], output_dir=photos)
+        await wait_status(queue, job["id"], ("done",))
+        assert (photos / "a.png").read_bytes() == original
+        assert (photos / "a-2.png").is_file()
+
+
+class TestCliUnwritableFolders:
+    def test_output_folder_error_is_a_message_not_a_traceback(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("BATCHROOM_DATA_DIR", str(tmp_path / "data"))
+        src = tmp_path / "a.png"
+        save_image(gradient_image(16, 16), src, "png")
+        blocker = tmp_path / "blocker"
+        blocker.write_text("a file")
+        code = main(["run", "steam-capsule-pack", str(src), "-o", str(blocker / "out")])
+        assert code == 1
+        assert capsys.readouterr().err.startswith("error: ")
+
+    def test_data_dir_that_is_a_file(self, tmp_path, capsys):
+        blocker = tmp_path / "blocker"
+        blocker.write_text("a file")
+        assert main(["--data-dir", str(blocker), "recipes", "list"]) == 1
+        assert "error: " in capsys.readouterr().err
+
+
+class TestWatchJobDeletedEarly:
+    async def test_sources_settle_instead_of_rerunning(self, settings, tmp_path, queue):
+        hot = tmp_path / "hot"
+        hot.mkdir()
+        settings.watch_config_path.write_text(
+            f"watch:\n  - folder: {hot}\n    recipe: tiny-pack\n    output: {tmp_path / 'out'}\n",
+            encoding="utf-8",
+        )
+        watcher = Watcher(settings, queue)
+        watcher.reload_config()
+        save_image(gradient_image(24, 24), hot / "drop.png", "png")
+        watcher._scan_all()
+        await asyncio.sleep(0.12)
+        watcher._scan_all()
+        (job_id,) = watcher._active_jobs
+        await wait_status(queue, job_id, ("done",))
+        queue.delete(job_id)  # before the watcher's next tick saw it finish
+        watcher._check_active_jobs()
+        assert not any((hot / INTAKE_DIR).glob("*/*"))  # nothing left to resubmit
+        assert (hot / "failed" / "drop.png").is_file()

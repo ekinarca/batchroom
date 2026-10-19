@@ -152,6 +152,7 @@ label { display: block; color: var(--ink-dim); font-size: 12.5px; margin-bottom:
 @keyframes pulse { 50% { opacity: .25; } }
 
 .grid { display: grid; gap: 14px; }
+.grid > .panel + .panel { margin-top: 0; }  /* the grid gap spaces cards; keep rows aligned */
 .grid.cols-2 { grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
 .grid.cols-3 { grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); }
 

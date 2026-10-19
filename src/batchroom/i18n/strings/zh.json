@@ -68,6 +68,7 @@
   "recipes.user": "用户",
   "recipes.new": "新建配方",
   "recipes.edit": "编辑",
+  "recipes.view": "查看",
   "recipes.duplicate": "复制",
   "recipes.validate": "校验",
   "recipes.save": "保存配方",
