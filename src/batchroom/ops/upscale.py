@@ -9,6 +9,7 @@ Alpha channels are upscaled separately with Lanczos, the standard practice.
 from __future__ import annotations
 
 import numpy as np
+from PIL import Image
 from pydantic import Field, field_validator
 
 from ..core import imaging
@@ -118,22 +119,37 @@ class UpscaleOp(Op):
         if spec is None:  # pragma: no cover - validator prevents
             raise ModelError(f"unknown model '{model_id}'")
         # First use downloads the weights (checksum-verified) — README promise.
+        # scale: 2 on an x4 model still runs (and holds) the full x4 result
+        model_w, model_h = w * spec.scale, h * spec.scale
+        if model_w * model_h > _MAX_OUTPUT_PIXELS:
+            raise OpError(
+                f"upscale via {spec.id} needs a {model_w}x{model_h} intermediate,"
+                " which exceeds the safety limit",
+                op=self.name,
+                hint="resize down first, or use model: lanczos",
+            )
         session = ctx.models.ensure_session(spec.id, progress_text=ctx.progress)
         ctx.progress(f"upscale ({spec.id})")
 
         rgb01 = img.pixels[:, :, :3].astype(np.float32) / 255.0
         sr = _tiled_sr(session, rgb01, spec.scale, params.tile, ctx)
         sr8 = np.rint(sr * 255.0).astype(np.uint8)
+        del sr
 
         # model_scale may exceed the requested scale (x4 model, scale: 2) — downsample.
+        # Opaque RGB: Pillow's 8-bit resample is exact here and needs no float copies.
         if sr8.shape[1] != target_w or sr8.shape[0] != target_h:
-            tmp = np.dstack([sr8, np.full(sr8.shape[:2], 255, np.uint8)])
-            sr8 = imaging.resize_rgba(tmp, target_w, target_h)[:, :, :3]
+            sr8 = np.asarray(
+                Image.fromarray(sr8, "RGB").resize(
+                    (target_w, target_h), Image.Resampling.LANCZOS
+                )
+            )
 
         alpha = img.pixels[:, :, 3]
         if (alpha != 255).any():
-            alpha_rgba = np.dstack([alpha, alpha, alpha, np.full_like(alpha, 255)])
-            alpha_up = imaging.resize_rgba(alpha_rgba, target_w, target_h)[:, :, 0]
+            alpha_up = np.asarray(
+                Image.fromarray(alpha, "L").resize((target_w, target_h), Image.Resampling.LANCZOS)
+            )
         else:
             alpha_up = np.full((target_h, target_w), 255, np.uint8)
 
