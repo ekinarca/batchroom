@@ -4,6 +4,86 @@ All notable changes to Batchroom. Format: [Keep a Changelog](https://keepachange
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-19
+
+Upgrading is drop-in (no schema change). Three things may need a look:
+in multi-user mode only admins can now save or delete recipes and reload
+the watch config; Pro email notifications verify the mail server's TLS
+certificate (add `&verify=0` to `BATCHROOM_SMTP_URL` for a self-signed
+internal relay); and a few recipes that used to load now fail
+validation with a clear message (see **Changed**).
+
+### Security
+
+- Login rate limits could be bypassed by sending many attempts at once:
+  every concurrent request passed the check before the first failure was
+  counted, so a burst got ~35 password guesses instead of 5. Attempts
+  are now counted before the password is checked.
+- Pro email notifications sent the SMTP password over TLS without
+  checking the server certificate, so anyone on the network path could
+  collect it. Certificates and hostnames are now verified.
+- Members (multi-user mode) could overwrite or delete the recipes every
+  user shares (built-ins included) and reload the watch config. These
+  are admin-only now, like deleting model weights. Members can still
+  view recipes and validate their own drafts.
+
+### Added
+
+- Recipes page: admins can delete a user recipe from its card (the API
+  could, the UI couldn't). Members get a read-only **View** instead of
+  **Edit**, and no Save or Reload buttons they can't use.
+
+### Changed
+
+- Recipes: only `rename` and `strip-metadata` may follow `preset-pack`.
+  Any other step there (a `resize`, `convert`, `composite`…) used to be
+  silently ignored; it is now a validation error. `output.manifest`,
+  `output.lossless` and `output.keep_metadata` must be `true`/`false` —
+  a quoted `"false"` used to turn EXIF/GPS retention **on**. WebP presets
+  over 16383 px per side (libwebp's limit) are rejected at load instead
+  of failing every item.
+- A `convert` step only overrides the `quality`, `lossless` and
+  `keep_metadata` it spells out; the rest now keep the recipe's
+  `output:` values instead of resetting to 90 / off.
+
+### Fixed
+
+- Transparent images: every resize, pad, cover or preset of a cut-out
+  premultiplied alpha twice, putting light fringes on anti-aliased edges
+  (`ecom-packshot`'s `transparent-1500`, sticker recipes). Resampling now
+  happens in premultiplied float and keeps edge colours exact.
+- `fit: cover` (all `steam-capsule-pack` presets) scaled the whole image
+  before cropping: a long thin strip (2000×4 → 2000×2000) needed a
+  2-gigapixel intermediate and could take the server down. It now crops
+  first and resamples straight to the target.
+- `upscale` with `scale: 2` on an x4 model got past the size guard and
+  used ~3.6× the memory of a 4× upscale to the same size. The x4
+  intermediate is now checked against the limit and downsampled
+  without float copies.
+- `batchroom run -o <input folder>` (and path jobs whose `output_dir` is
+  an input folder) wrote results over the originals when the names
+  matched. Outputs now step aside (`a-2.png`); inputs are never replaced.
+- Watch folders: a job deleted before the watcher saw it finish left its
+  sources in `.intake/`, and the next restart processed them again. They
+  now move to `failed/`. A database error during submit no longer
+  strands files either.
+- A Pro license that expired while the server kept running stayed active
+  until the next restart.
+- API: `~unknownuser/...` paths, a NUL byte in `output_dir`, a webhook URL
+  like `http://[::1/hook` and a huge `offset` answered 500; they are 400s
+  (or an empty page) now. Saving or deleting a recipe that comes from a
+  `BATCHROOM_RECIPE_DIRS` folder reported success and changed nothing; it
+  answers 409 "edit it there". Path-job intake (walking a big NAS tree)
+  no longer stalls other requests and the live stream.
+- Members' open tabs never heard about the deletion of their own jobs.
+- CLI: an output or data folder that can't be created printed a
+  traceback; it is a one-line error with exit code 1.
+- TIFFs with a 0/0 resolution failed to encode to anything but WebP; DPI
+  now follows a 90° EXIF rotation.
+- Web UI: the System page showed "Open" for API authentication in
+  multi-user mode, and every card after the first in a grid (recipes,
+  models) sat 14px lower than its row.
+
 ## [0.3.0] — 2026-10-18
 
 Upgrading is drop-in (no schema change). 0.2.0 was never published as an
