@@ -4,6 +4,88 @@ All notable changes to Batchroom. Format: [Keep a Changelog](https://keepachange
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-26
+
+Upgrading is drop-in (no schema change). A few recipes that used to load
+now fail validation with a clear message, because the settings they
+spelled out were being ignored or could never work (see **Changed**).
+Output names now collide case-insensitively, so a batch holding both
+`a.png` and `A.png` gets `A-2.png` instead of one file overwriting the
+other on macOS, Windows/SMB shares and exFAT.
+
+### Security
+
+- Multi-user mode: an open live-update stream (`/api/events`) kept its
+  rights after the user was disabled, demoted or logged out. A disabled
+  admin's open tab went on receiving every user's job updates, webhook
+  URLs included. Streams now re-check their credentials every 15 s and
+  close when they are gone.
+- Two admins demoting, disabling or deleting each other at the same
+  moment could leave the server with no admin; concurrent "add user"
+  requests could exceed the license's seat count. Both checks now run
+  in the same database transaction as the change.
+
+### Changed
+
+- Recipes: a `convert` step before `preset-pack`, or `output.format` /
+  `quality` / `lossless` next to one, is a validation error (each preset
+  uses its own format, so these were silently ignored and a PNG request
+  came out as JPG). Rename patterns with malformed variables
+  (`{Original}`, `{ original }`, an unclosed `{original`) are rejected
+  instead of ending up literally in every file name. A fixed size over
+  the 240 MP limit, or a fixed resize written as WebP past 16383 px, is
+  rejected at load instead of failing every item. `aspect: 4:5` without
+  quotes now says to quote it.
+- `alpha_matting: true` (on in `ecom-packshot` and `marketplace-pack`)
+  needs about half the memory, with bit-identical results: the matte
+  refinement of a 6 MP photo peaked at 870 MB and now 410 MB (a 24 MP
+  camera photo: ~3.4 GB → ~1.6 GB per worker). Model upscaling holds its
+  result as 8-bit (~37 → ~14 bytes per output pixel).
+- `batchroom serve` (and the Docker image) stops within ~3 s with UI tabs
+  open, instead of ~15 s, which `docker stop` cut short with a SIGKILL.
+
+### Fixed
+
+- Path jobs whose `output_dir` is an input folder could replace an
+  original the recipe skipped (e.g. `logo.png` next to `logo.jpg` in a
+  JPG-only recipe that writes PNG). No existing file there is replaced
+  any more; results step aside (`logo-2.png`).
+- `upscale` with a model put the removed background's colour on the
+  edges of cut-outs (a green fringe after a green-screen removal). The
+  colour hidden under transparent pixels is now replaced by the visible
+  colour around it before upscaling.
+- Recipes, `watch.yaml` or a `license.key` saved as UTF-16 (Notepad's
+  "Unicode") or in Latin-1 stopped the server from starting; `batchroom
+  recipes`/`run` printed a traceback. They are reported as problems now,
+  and a license key with a UTF-8 BOM or in UTF-16 is read correctly.
+- Watch folders: a folder nested inside another watch folder had its
+  files, `done/` sources and outputs taken by the outer entry and
+  processed again with the wrong recipe. Each entry now leaves the
+  others' folders alone, and the same folder listed twice is reported.
+- Deleting a job while a retry re-queued it removed the job but left
+  its workers writing files nobody would clean up; that delete is now
+  refused. Jobs submitted in the same second ran interleaved instead of
+  first-in, first-out, and listed in random order.
+- Recipes page: deleting a recipe removed the file named after it even
+  when that file held a different recipe, and saving a new recipe could
+  overwrite it. Only the file that defines the recipe is touched now.
+- API answers that were 500s: `NaN`/`Infinity` in any JSON body
+  (including the login form) is a 422; a NUL byte in an output path or
+  in `output_dir` with a folder input, and a huge user id, are 4xx.
+  Webhook URLs without a usable host (`http://:80/`, `http://xn--/`) are
+  rejected when the job is submitted, and an upload whose name has a
+  300-character "extension" no longer fails the whole upload.
+- Images: float and 32-bit integer greyscale TIFFs decoded as black or
+  white; they keep their tones. `keep_metadata` with JPEG output no
+  longer fails items whose EXIF block is over 64 KB (it is dropped), and
+  a DPI above 65535 is no longer written wrapped around.
+- UI: file names and paths that start or end with punctuation were
+  shown reordered in Arabic; job times were UTC labelled as local time;
+  the file counter stayed at "Uploading… 100%" after a failed upload; a
+  malformed link (`#/queue/%E0`) left the page blank; browsers that
+  block site storage could not load the UI at all.
+- CLI: `batchroom models rm <unknown id>` exited 0.
+
 ## [0.4.0] — 2026-10-19
 
 Upgrading is drop-in (no schema change). Three things may need a look:

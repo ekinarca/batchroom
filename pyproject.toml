@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batchroom"
-version = "0.4.0"
+version = "0.5.0"
 description = "Self-hosted AI media processing server: batch background removal, resize, convert, preset packs. No meters, no quotas, no cloud."
 readme = "README.md"
 requires-python = ">=3.11"
