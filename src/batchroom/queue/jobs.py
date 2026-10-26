@@ -236,13 +236,13 @@ class JobQueue:
         with self.db.connect() as conn:
             if user_id is None:
                 rows = conn.execute(
-                    "SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                    "SELECT * FROM jobs ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     "SELECT * FROM jobs WHERE user_id = ?"
-                    " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                    " ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?",
                     (user_id, limit, offset),
                 ).fetchall()
         return [row_to_job(r) for r in rows]
@@ -300,8 +300,6 @@ class JobQueue:
         their outputs are untouched. Watch-folder sources have already been
         moved to failed/, so those jobs retry by dropping the files again."""
         job = self.get_job(job_id)
-        if job["status"] not in ("done", "cancelled"):
-            raise JobError("job is still running", hint="wait for it to finish first")
         if job["source"] == "watch":
             raise JobError(
                 "watch-folder jobs cannot be retried here",
@@ -309,6 +307,13 @@ class JobQueue:
             )
         with self.db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            # status under the write lock: a concurrent delete or retry must not
+            # slip in between the check and the re-queue
+            current = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if current is None:
+                raise JobError(f"job '{job_id}' not found")
+            if current["status"] not in ("done", "cancelled"):
+                raise JobError("job is still running", hint="wait for it to finish first")
             rows = conn.execute(
                 "SELECT idx, status, source_path FROM items"
                 " WHERE job_id=? AND status IN ('failed', 'cancelled')",
@@ -342,10 +347,15 @@ class JobQueue:
 
     def delete(self, job_id: str) -> None:
         job = self.get_job(job_id)
-        if job["status"] in ("queued", "running"):
-            raise JobError("cannot delete a running job", hint="cancel it first")
         with self.db.connect() as conn:
-            conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+            # check and delete in one statement: a retry landing in between
+            # would otherwise lose its row while workers write its files
+            deleted = conn.execute(
+                "DELETE FROM jobs WHERE id=? AND status NOT IN ('queued', 'running')",
+                (job_id,),
+            ).rowcount
+        if not deleted:
+            raise JobError("cannot delete a running job", hint="cancel it first")
         # Only remove files we created: the job's own directory under jobs_dir.
         job_dir = (self.settings.jobs_dir / job_id).resolve()
         jobs_root = self.settings.jobs_dir.resolve()
@@ -413,7 +423,7 @@ class JobQueue:
                 " j.started_at AS job_started "
                 "FROM items i JOIN jobs j ON j.id = i.job_id "
                 "WHERE i.status='pending' AND j.cancel_requested=0 "
-                "ORDER BY j.priority DESC, j.created_at, i.idx LIMIT 1"
+                "ORDER BY j.priority DESC, j.created_at, j.rowid, i.idx LIMIT 1"
             ).fetchone()
             if row is None:
                 return None
@@ -440,10 +450,12 @@ class JobQueue:
                     out_dir = conn.execute(
                         "SELECT output_dir FROM jobs WHERE id=?", (job_id,)
                     ).fetchone()
-                # an output_dir that is an input folder: results never replace originals
+                # an output_dir that is an input folder: results never replace originals,
+                # including files there the recipe skipped
                 taken = inputs_inside(
                     Path(out_dir["output_dir"]), [row["source_path"] for row in rows]
                 ) if out_dir else set()
+                protect_dir = Path(out_dir["output_dir"]) if taken else None
                 for row in rows:
                     if row["result_json"] is None:
                         continue
@@ -452,7 +464,7 @@ class JobQueue:
                             taken.add(output["path"])
                     except (ValueError, KeyError):
                         continue
-                names = JobNames(taken)
+                names = JobNames(taken, protect_dir=protect_dir)
                 self._names[job_id] = names
             return names
 

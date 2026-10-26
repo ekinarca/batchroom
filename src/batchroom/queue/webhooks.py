@@ -34,7 +34,8 @@ async def deliver_webhook(url: str, manifest: dict) -> bool:
                     "webhook attempt %d for %s got HTTP %d",
                     attempt + 1, manifest.get("job_id"), response.status_code,
                 )
-            except httpx.InvalidURL as exc:  # not an HTTPError; retrying cannot help
+            # not HTTPErrors (a bad IDNA host is a ValueError); retrying cannot help
+            except (httpx.InvalidURL, ValueError) as exc:
                 log.error("webhook URL %s for %s is invalid: %s", url, manifest.get("job_id"), exc)
                 return False
             except httpx.HTTPError as exc:

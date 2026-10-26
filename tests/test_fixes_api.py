@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from batchroom.api.auth import Actor
@@ -295,3 +297,172 @@ class TestSystemAuthState:
         with TestClient(create_app(licensed_settings)) as c:
             login(c, "admin@co.example", "admin-pass-1")
             assert c.get("/api/system").json()["auth_required"] is True
+
+
+# ---------------------------------------------------------------------------
+# 0.5.0
+# ---------------------------------------------------------------------------
+
+
+class TestNonFiniteJson:
+    @pytest.mark.parametrize("url,body", [
+        ("/api/jobs", '{"recipe": "steam-capsule-pack", "paths": ["/tmp"], "priority": NaN}'),
+        ("/api/jobs", '{"recipe": "steam-capsule-pack", "paths": [Infinity]}'),
+        ("/api/recipes/validate", '{"text": NaN}'),
+    ])
+    def test_nan_and_infinity_are_422_not_500(self, client, url, body):  # noqa: F811
+        r = client.post(url, content=body, headers={"content-type": "application/json"})
+        assert r.status_code == 422, r.text
+        assert "input" not in r.json()["detail"][0]
+
+    def test_unauthenticated_login_with_nan_is_422(self, licensed_settings):  # noqa: F811
+        create_user(Database(licensed_settings.db_path), email="a@co.example",
+                    password="admin-pass-1", role="admin")
+        with TestClient(create_app(licensed_settings)) as c:
+            r = c.post("/api/auth/login", content='{"email": NaN, "password": "x"}',
+                       headers={"content-type": "application/json"})
+            assert r.status_code == 422
+
+
+class TestMoreBadInput:
+    def test_nul_in_output_relpath_is_404(self, client):  # noqa: F811
+        r = client.post("/api/jobs", data={"recipe": "steam-capsule-pack"},
+                        files=[("files", ("a.jpg", upload_bytes(), "image/jpeg"))])
+        job = wait_done(client, r.json()["id"])
+        assert client.get(f"/api/jobs/{job['id']}/outputs/a%00b.png").status_code == 404
+
+    def test_nul_in_output_dir_with_a_folder_input_is_400(self, client, tmp_path):  # noqa: F811
+        folder = tmp_path / "in"
+        save_image(gradient_image(48, 48), folder / "a.png", "png")
+        r = client.post("/api/jobs", json={
+            "recipe": "steam-capsule-pack", "paths": [str(folder)], "output_dir": "/tmp/a\x00b",
+        })
+        assert r.status_code == 400, r.text
+
+    @pytest.mark.parametrize("url", ["http://xn--/", "http://:80/", "http://user@/hook"])
+    def test_webhook_without_a_usable_host_is_400(self, client, tmp_path, url):  # noqa: F811
+        r = client.post("/api/jobs", json={
+            "recipe": "steam-capsule-pack", "paths": [str(tmp_path)], "webhook_url": url,
+        })
+        assert r.status_code == 400, r.text
+
+    def test_huge_user_id_is_422(self, licensed_settings):  # noqa: F811
+        create_user(Database(licensed_settings.db_path), email="a@co.example",
+                    password="admin-pass-1", role="admin")
+        with TestClient(create_app(licensed_settings)) as c:
+            login(c, "a@co.example", "admin-pass-1")
+            assert c.patch("/api/users/100000000000000000000", json={}).status_code == 422
+            assert c.delete("/api/users/100000000000000000000").status_code == 422
+
+
+class TestRecipeFileNames:
+    def test_delete_and_save_never_touch_another_recipes_file(self, settings):
+        # web.yaml defines "shop-thumbs"; the recipe "web" lives in anything.yaml
+        recipes = settings.recipes_dir
+        recipes.mkdir(parents=True, exist_ok=True)
+        convert = "steps:\n  - op: convert\n    format: png\n"
+        (recipes / "web.yaml").write_text(f"name: shop-thumbs\n{convert}")
+        (recipes / "anything.yaml").write_text(f"name: web\n{convert}")
+        with TestClient(create_app(settings)) as c:
+            assert c.delete("/api/recipes/web").status_code == 200
+            names = {r["name"] for r in c.get("/api/recipes").json()["recipes"]}
+            assert "shop-thumbs" in names and "web" not in names
+            r = c.post("/api/recipes", json={"text": f"name: web\n{convert}"})
+            assert r.status_code == 201
+            assert (recipes / "web.yaml").read_text().startswith("name: shop-thumbs")
+            names = {r["name"] for r in c.get("/api/recipes").json()["recipes"]}
+            assert {"shop-thumbs", "web"} <= names
+
+
+class TestEventStreamRevocation:
+    def test_stream_ends_when_the_user_is_disabled(self, licensed_settings, monkeypatch):  # noqa: F811
+        from batchroom.api import routes
+        from batchroom.pro.users import create_session, update_user
+
+        monkeypatch.setattr(routes, "AUTH_RECHECK_SECONDS", 0.0)
+        db = Database(licensed_settings.db_path)
+        create_user(db, email="a@co.example", password="admin-pass-1", role="admin")
+        admin2 = create_user(db, email="b@co.example", password="admin-pass-2", role="admin")
+        token = create_session(db, admin2["id"])
+        app = create_app(licensed_settings)
+
+        async def disconnected() -> bool:
+            return False
+
+        request = SimpleNamespace(
+            app=app, state=SimpleNamespace(actor=Actor(kind="user", user=admin2)),
+            headers={}, cookies={"br_session": token}, query_params={},
+            is_disconnected=disconnected,
+        )
+
+        async def run() -> list[str]:
+            body = (await events_stream(request)).body_iterator
+            chunks = [await body.__anext__()]
+            update_user(db, admin2["id"], disabled=True)
+            try:
+                while True:
+                    chunks.append(await asyncio.wait_for(body.__anext__(), timeout=5.0))
+            except StopAsyncIteration:
+                return chunks
+
+        chunks = asyncio.run(run())
+        assert chunks == [": connected\n\n"]
+
+
+class TestUserRaces:
+    def test_two_admins_demoting_each_other_leave_one(self, settings):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from batchroom.pro.users import UserError, count_admins, update_user
+
+        for trial in range(3):
+            db = Database(settings.data_dir / f"race-{trial}.db")
+            a = create_user(db, email="a@co.example", password="pass-word-a", role="admin")
+            b = create_user(db, email="b@co.example", password="pass-word-b", role="admin")
+
+            def demote(user_id, db=db):
+                with contextlib.suppress(UserError):
+                    update_user(db, user_id, role="member")
+
+            with ThreadPoolExecutor(2) as pool:
+                list(pool.map(demote, [a["id"], b["id"]]))
+            assert count_admins(db) == 1
+
+    def test_concurrent_creates_respect_the_seat_limit(self, settings):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from batchroom.pro.users import UserError, count_users
+
+        db = Database(settings.db_path)
+
+        def add(i):
+            with contextlib.suppress(UserError):
+                create_user(db, email=f"u{i}@co.example", password="pass-word-x", seat_limit=3)
+
+        with ThreadPoolExecutor(8) as pool:
+            list(pool.map(add, range(8)))
+        assert count_users(db) == 3
+
+
+class TestLicenseFileEncoding:
+    @pytest.mark.parametrize("encoding", ["utf-16", "utf-8-sig"])
+    def test_windows_saved_key_still_loads(self, settings, encoding):
+        from batchroom.pro import load_license
+        from batchroom.pro.license import license_path
+
+        from .test_pro import issue_key
+
+        path = license_path(settings)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(issue_key() + "\r\n", encoding=encoding)
+        info = load_license(settings)
+        assert info.valid, info.error
+
+    def test_undecodable_key_does_not_stop_the_server(self, settings):
+        from batchroom.pro.license import license_path
+
+        path = license_path(settings)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\x00\xc3(garbage")
+        with TestClient(create_app(settings)) as c:
+            assert c.get("/api/health").status_code == 200

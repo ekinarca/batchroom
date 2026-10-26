@@ -56,7 +56,12 @@ def cmd_serve(args) -> int:
     from .server import create_app
 
     app = create_app(settings)
-    uvicorn.run(app, host=settings.host, port=settings.port, log_level=settings.log_level)
+    # open UI tabs hold an event stream that never ends by itself: without a
+    # bound, Ctrl+C (and `docker stop`, which kills after 10 s) waited ~15 s
+    uvicorn.run(
+        app, host=settings.host, port=settings.port, log_level=settings.log_level,
+        timeout_graceful_shutdown=3,
+    )
     return 0
 
 
@@ -132,7 +137,8 @@ def cmd_run(args) -> int:
                 return 1
 
     started = utc_now_iso()
-    names = JobNames(inputs_inside(out_dir, seen))  # -o may be an input folder
+    taken = inputs_inside(out_dir, seen)  # -o may be an input folder
+    names = JobNames(taken, protect_dir=out_dir if taken else None)
     ctx = PipelineContext(
         recipe_name=recipe.name,
         job_id="cli",
@@ -284,7 +290,11 @@ def cmd_models_verify(args) -> int:
 
 def cmd_models_rm(args) -> int:
     from .models.manager import ModelManager
+    from .models.registry import get_spec
 
+    if get_spec(args.model) is None:
+        print(f"error: unknown model '{args.model}'", file=sys.stderr)
+        return 1
     settings = _settings_from(args)
     manager = ModelManager(settings.models_dir)
     removed = manager.delete(args.model)

@@ -124,7 +124,7 @@ def parse_license(
     text: str, *, extra_keys: dict[str, str] | None = None, today: date | None = None
 ) -> LicenseInfo:
     """Verify a key string. Never raises — returns LicenseInfo with error set."""
-    raw = (text or "").strip()
+    raw = (text or "").strip().lstrip("\ufeff").strip()  # a BOM from a Windows editor
     if not raw:
         return _fail(raw, "empty license key")
     parts = raw.split(".")
@@ -197,9 +197,13 @@ def load_license(settings, *, extra_keys: dict[str, str] | None = None) -> Licen
     if not path.is_file():
         return LicenseInfo(tier="community", valid=False, error=None)
     try:
-        return parse_license(path.read_text(encoding="utf-8"), extra_keys=extra_keys)
-    except OSError as exc:  # pragma: no cover - unlikely
+        data = path.read_bytes()
+        # Notepad's "Unicode" saves UTF-16; a decode error must not stop the server
+        encoding = "utf-16" if data[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig"
+        text = data.decode(encoding)
+    except (OSError, UnicodeDecodeError) as exc:
         return LicenseInfo(tier="community", valid=False, error=f"cannot read license: {exc}")
+    return parse_license(text, extra_keys=extra_keys)
 
 
 def save_license(settings, text: str) -> None:

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import Path as FastPath
 from pydantic import BaseModel, Field
 
 from ..pro.license import parse_license, remove_license, save_license
@@ -104,6 +107,10 @@ def post_user(request: Request, body: CreateUserBody) -> dict:
     return user
 
 
+# SQLite integers are 64-bit: a bigger id must be a 422, not an OverflowError
+UserId = Annotated[int, FastPath(ge=1, le=2**63 - 1)]
+
+
 class PatchUserBody(BaseModel):
     role: str | None = Field(default=None, pattern="^(admin|member)$")
     password: str | None = Field(default=None, min_length=8, max_length=1024)
@@ -112,7 +119,7 @@ class PatchUserBody(BaseModel):
 
 
 @router.patch("/users/{user_id}", dependencies=[Depends(require_admin)])
-def patch_user(request: Request, user_id: int, body: PatchUserBody) -> dict:
+def patch_user(request: Request, user_id: UserId, body: PatchUserBody) -> dict:
     _require_multiuser_feature(request)
     try:
         user = update_user(
@@ -126,7 +133,7 @@ def patch_user(request: Request, user_id: int, body: PatchUserBody) -> dict:
 
 
 @router.delete("/users/{user_id}", dependencies=[Depends(require_admin)])
-def remove_user(request: Request, user_id: int) -> dict:
+def remove_user(request: Request, user_id: UserId) -> dict:
     _require_multiuser_feature(request)
     try:
         delete_user(request.app.state.db, user_id)
@@ -137,7 +144,7 @@ def remove_user(request: Request, user_id: int) -> dict:
 
 
 @router.post("/users/{user_id}/api-key", dependencies=[Depends(require_admin)])
-def new_api_key(request: Request, user_id: int) -> dict:
+def new_api_key(request: Request, user_id: UserId) -> dict:
     _require_multiuser_feature(request)
     try:
         raw = rotate_api_key(request.app.state.db, user_id)

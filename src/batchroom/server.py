@@ -8,7 +8,9 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -119,6 +121,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app_holder["app"] = app
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # FastAPI's default handler echoes each bad value back; a NaN or
+        # Infinity from the JSON body can't be serialized and became a 500
+        errors = [
+            {k: v for k, v in err.items() if k not in ("input", "ctx", "url")}
+            for err in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
     app.state.settings = settings
     app.state.db = database
     app.state.events = events

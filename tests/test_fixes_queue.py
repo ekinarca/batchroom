@@ -236,3 +236,126 @@ class TestWatchJobDeletedEarly:
         watcher._check_active_jobs()
         assert not any((hot / INTAKE_DIR).glob("*/*"))  # nothing left to resubmit
         assert (hot / "failed" / "drop.png").is_file()
+
+
+# ---------------------------------------------------------------------------
+# 0.5.0
+# ---------------------------------------------------------------------------
+
+SKIPPING_RECIPE = """
+name: jpg-to-png
+input:
+  formats: [jpg]
+steps:
+  - op: resize
+    size: 16x16
+  - op: convert
+    format: png
+output:
+  structure: flat
+  manifest: false
+"""
+
+
+class TestSkippedOriginalsAreSafe:
+    async def test_path_job_never_replaces_a_file_the_recipe_skipped(
+        self, queue, tmp_path, settings
+    ):
+        (settings.recipes_dir / "jpg-to-png.yaml").write_text(SKIPPING_RECIPE, encoding="utf-8")
+        recipe = discover_recipes(recipe_dirs(settings))[0]["jpg-to-png"]
+        photos = tmp_path / "photos"
+        save_image(gradient_image(32, 32), photos / "logo.jpg", "jpg")
+        save_image(gradient_image(40, 40), photos / "logo.png", "png")  # skipped: not a jpg
+        original = (photos / "logo.png").read_bytes()
+        files, _ = queue.collect_input_files([photos], recipe)
+        job = queue.submit(recipe, files, output_dir=photos)
+        await wait_status(queue, job["id"], ("done",))
+        assert (photos / "logo.png").read_bytes() == original
+        assert (photos / "logo-2.png").is_file()
+
+
+class TestQueueOrder:
+    async def test_jobs_from_the_same_second_run_first_in_first_out(
+        self, settings, recipes_provider, tmp_path, monkeypatch
+    ):
+        import batchroom.queue.jobs as jobs_mod
+
+        # random ids in the "wrong" order, as they are half of the time
+        ids = iter(["j-20260101-ffffffffff", "j-20260101-0000000000"])
+        monkeypatch.setattr(jobs_mod, "new_job_id", lambda: next(ids))
+        # no workers: claim by hand to see the order
+        q = JobQueue(settings, Database(settings.db_path), ModelManager(settings.models_dir),
+                     EventBus(), recipes_provider)
+        recipe = recipes_provider()["tiny-pack"]
+        first = q.submit(recipe, make_inputs(tmp_path / "a", 3))["id"]
+        second = q.submit(recipe, make_inputs(tmp_path / "b", 3))["id"]
+        with q.db.connect() as conn:  # both in the same created_at second
+            conn.execute("UPDATE jobs SET created_at='2026-01-01T00:00:00+00:00'")
+        order = [q._claim_next()["job_id"] for _ in range(6)]
+        assert order == [first] * 3 + [second] * 3
+        assert [j["id"] for j in q.list_jobs()] == [second, first]
+
+    async def test_delete_refuses_a_job_that_was_requeued_meanwhile(
+        self, settings, recipes_provider, tmp_path
+    ):
+        q = JobQueue(settings, Database(settings.db_path), ModelManager(settings.models_dir),
+                     EventBus(), recipes_provider)
+        job = q.submit(recipe := recipes_provider()["tiny-pack"], make_inputs(tmp_path, 1))
+        assert recipe
+        real_get = q.get_job
+        # delete() saw the job finished, then a retry re-queued it
+        q.get_job = lambda job_id: {**real_get(job_id), "status": "done"}
+        with pytest.raises(JobError, match="running"):
+            q.delete(job["id"])
+        q.get_job = real_get
+        assert q.get_job(job["id"])["status"] == "queued"
+
+
+class TestWatchConfigEncoding:
+    def test_non_utf8_watch_yaml_is_a_problem_not_a_crash(self, tmp_path):
+        cfg = tmp_path / "watch.yaml"
+        cfg.write_bytes("watch:\n  - folder: /r\xe9pertoire\n    recipe: r\n".encode("latin-1"))
+        result = load_watch_config(cfg)
+        assert result.entries == []
+        assert any("unreadable" in p for p in result.problems)
+
+
+class TestNestedWatchFolders:
+    async def test_parent_folder_leaves_a_nested_watch_folder_alone(
+        self, settings, tmp_path, queue
+    ):
+        parent = tmp_path / "parent"
+        child = parent / "child"
+        child.mkdir(parents=True)
+        settings.watch_config_path.write_text(
+            f"watch:\n  - folder: {parent}\n    recipe: tiny-pack\n"
+            f"  - folder: {child}\n    recipe: tiny-pack\n",
+            encoding="utf-8",
+        )
+        watcher = Watcher(settings, queue)
+        watcher.reload_config()
+        save_image(gradient_image(16, 16), parent / "top.png", "png")
+        save_image(gradient_image(16, 16), child / "inner.png", "png")
+        (child / "done").mkdir()
+        save_image(gradient_image(16, 16), child / "done" / "old.png", "png")
+        by_folder = {e.folder: {p.name for p in watcher._candidates(e)} for e in watcher.entries}
+        assert by_folder[parent] == {"top.png"}
+        assert by_folder[child] == {"inner.png"}
+
+    async def test_the_same_folder_twice_is_a_problem(self, settings, tmp_path, queue):
+        hot = tmp_path / "hot"
+        hot.mkdir()
+        settings.watch_config_path.write_text(
+            f"watch:\n  - folder: {hot}\n    recipe: tiny-pack\n"
+            f"  - folder: {hot}/\n    recipe: tiny-pack\n",
+            encoding="utf-8",
+        )
+        watcher = Watcher(settings, queue)
+        watcher.reload_config()
+        assert len(watcher.entries) == 1
+        assert any("more than once" in p for p in watcher.problems)
+
+
+def test_cli_models_rm_unknown_id_fails(tmp_path, capsys):
+    assert main(["--data-dir", str(tmp_path / "data"), "models", "rm", "nope"]) == 1
+    assert "unknown model" in capsys.readouterr().err

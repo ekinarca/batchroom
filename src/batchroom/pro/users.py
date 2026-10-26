@@ -89,7 +89,11 @@ def _token_hash(raw: str) -> str:
 
 def count_users(db: Database) -> int:
     with db.connect() as conn:
-        return conn.execute("SELECT count(*) FROM users").fetchone()[0]
+        return _count_users(conn)
+
+
+def _count_users(conn) -> int:
+    return conn.execute("SELECT count(*) FROM users").fetchone()[0]
 
 
 def count_admins(db: Database) -> int:
@@ -125,16 +129,19 @@ def create_user(
         raise UserError(f"invalid email address: {email!r}")
     if role not in ("admin", "member"):
         raise UserError("role must be 'admin' or 'member'")
-    if seat_limit is not None and count_users(db) >= seat_limit:
-        raise UserError(
-            f"seat limit reached ({seat_limit})",
-            hint="your license covers this many users; contact sales for more seats",
-        )
-    stored = hash_password(password)
+    stored = hash_password(password)  # slow: before taking the write lock
     import sqlite3
 
     try:
         with db.connect() as conn:
+            # count and insert in one write transaction, or concurrent creates
+            # all pass the seat check before any of them is inserted
+            conn.execute("BEGIN IMMEDIATE")
+            if seat_limit is not None and _count_users(conn) >= seat_limit:
+                raise UserError(
+                    f"seat limit reached ({seat_limit})",
+                    hint="your license covers this many users; contact sales for more seats",
+                )
             cursor = conn.execute(
                 "INSERT INTO users (email, name, password, role, created_at)"
                 " VALUES (?,?,?,?,?)",
@@ -157,7 +164,11 @@ def update_user(
     disabled: bool | None = None,
     name: str | None = None,
 ) -> dict:
+    stored = hash_password(password) if password is not None else None
     with db.connect() as conn:
+        # the last-admin checks and the updates must not interleave with another
+        # admin's change, or two admins demoting each other leave none
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         if row is None:
             raise UserError(f"user {user_id} not found")
@@ -177,8 +188,7 @@ def update_user(
                 conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
         if name is not None:
             conn.execute("UPDATE users SET name=? WHERE id=?", (name.strip(), user_id))
-        if password is not None:
-            stored = hash_password(password)
+        if stored is not None:
             conn.execute("UPDATE users SET password=? WHERE id=?", (stored, user_id))
             conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
         updated = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
@@ -187,6 +197,7 @@ def update_user(
 
 def delete_user(db: Database, user_id: int) -> None:
     with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         if row is None:
             raise UserError(f"user {user_id} not found")

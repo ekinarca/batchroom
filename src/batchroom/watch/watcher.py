@@ -80,7 +80,7 @@ def load_watch_config(path: Path) -> WatchConfigResult:
         return result
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError) as exc:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:  # e.g. saved as UTF-16
         result.problems.append(f"watch.yaml unreadable: {exc}")
         return result
     entries = data.get("watch") if isinstance(data, dict) else None
@@ -143,6 +143,7 @@ class Watcher:
         for problem in result.problems:
             log.warning("watch config: %s", problem)
         recipes = self.queue.recipes_provider()
+        kept: list[WatchEntry] = []
         for entry in list(self.entries):
             problem = None
             if entry.recipe not in recipes:
@@ -150,10 +151,15 @@ class Watcher:
             elif _contains(entry.output, entry.folder):
                 # every file would count as one of our own outputs
                 problem = f"watch folder {entry.folder}: output must not contain the folder"
+            elif any(_same_dir(entry.folder, other.folder) for other in kept):
+                # two entries would race for every file
+                problem = f"watch folder {entry.folder}: listed more than once"
             if problem:
                 self.problems.append(problem)
                 log.warning("%s", problem)
                 self.entries.remove(entry)
+            else:
+                kept.append(entry)
 
     def status(self) -> dict:
         return {
@@ -248,7 +254,15 @@ class Watcher:
         # Our own outputs, the done/failed/.intake folders, hidden and NAS
         # system folders (@eaDir thumbnails, #recycle...) are pruned, not walked.
         reserved = [entry.folder / name for name in _RESERVED]
-        for path in walk_files(entry.folder, exclude_dirs=(entry.output, *reserved)):
+        # A watch folder nested in this one belongs to its own entry (recipe,
+        # done/, failed/ and outputs): walking into it took the other entry's
+        # files and results away from it.
+        others = [
+            path for other in self.entries if other is not entry
+            for path in (other.folder, other.output)
+            if not _same_dir(path, entry.folder)
+        ]
+        for path in walk_files(entry.folder, exclude_dirs=(entry.output, *reserved, *others)):
             if path.name.endswith(".part"):
                 continue
             if path.suffix.lower() not in READ_EXTENSIONS:
@@ -364,6 +378,13 @@ class Watcher:
             intake.rmdir()
         except OSError:
             pass
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
 
 
 def _contains(outer: Path, inner: Path) -> bool:

@@ -12,9 +12,12 @@ import logging
 import re
 import shutil
 import threading
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import httpx
+import yaml
 from fastapi import APIRouter, Depends, Request
 from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -34,13 +37,14 @@ from ..ops.base import all_ops
 from ..queue.events import sse_format
 from ..queue.jobs import JobQueue, new_job_id
 from .archive import stream_zip
-from .auth import actor_of, features, require_admin, users_exist
+from .auth import actor_of, features, get_actor, require_admin, users_exist
 
 log = logging.getLogger("batchroom.api")
 router = APIRouter()
 open_router = APIRouter()  # unauthenticated: i18n only (login screen needs strings)
 
 MAX_UPLOAD_FILES = 10000  # per request; matches the JSON mode's path limit
+AUTH_RECHECK_SECONDS = 15.0  # how often an open event stream re-checks its credentials
 
 
 def _clamp_priority(request: Request, value) -> int:
@@ -78,7 +82,13 @@ def _webhook_or_400(url: str | None) -> str | None:
         parts = urlsplit(url)
     except ValueError:  # e.g. an unclosed IPv6 bracket
         parts = None
-    if parts is None or parts.scheme not in ("http", "https") or not parts.netloc:
+    try:
+        # the host as delivery will see it: "http://:80/" or "http://user@/" have
+        # none, and "http://xn--/" is not a valid IDNA name
+        host = httpx.URL(url).host
+    except (httpx.InvalidURL, ValueError):
+        host = None
+    if parts is None or parts.scheme not in ("http", "https") or not host:
         raise HTTPException(status_code=400, detail="webhook_url must be an http(s) URL")
     return url
 
@@ -93,7 +103,6 @@ def system_info(request: Request) -> dict:
     settings = _settings(request)
     queue = _queue(request)
     watcher = request.app.state.watcher
-    import time
 
     return {
         "app": "batchroom",
@@ -189,6 +198,27 @@ def _user_recipe_path(request: Request, name: str) -> Path | None:
     return None
 
 
+def _file_recipe_name(path: Path) -> str | None:
+    """The ``name:`` a recipe file declares, even if the rest doesn't validate."""
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError):
+        return None
+    name = data.get("name") if isinstance(data, dict) else None
+    return name if isinstance(name, str) else None
+
+
+def _free_recipe_file(recipes_dir: Path, name: str) -> Path:
+    """A file for a new recipe: ``{name}.yaml`` unless that file already holds
+    a different recipe (file names needn't match), which must not be replaced."""
+    path = recipes_dir / f"{name}.yaml"
+    n = 2
+    while path.exists() and _file_recipe_name(path) not in (None, name):
+        path = recipes_dir / f"{name}-{n}.yaml"
+        n += 1
+    return path
+
+
 # Recipes and the watch config are shared by every user, like model weights.
 @router.post("/recipes", status_code=201, dependencies=[Depends(require_admin)])
 def save_recipe(request: Request, body: RecipeBody) -> dict:
@@ -197,7 +227,9 @@ def save_recipe(request: Request, body: RecipeBody) -> dict:
         recipe = load_recipe_text(body.text)
     except RecipeError as exc:
         raise _error(exc) from exc
-    path = _user_recipe_path(request, recipe.name) or settings.recipes_dir / f"{recipe.name}.yaml"
+    path = _user_recipe_path(request, recipe.name) or _free_recipe_file(
+        settings.recipes_dir, recipe.name
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".part")  # discovery only globs *.yaml / *.yml
     tmp.write_text(body.text, encoding="utf-8")
@@ -211,16 +243,16 @@ def delete_recipe(request: Request, name: str) -> dict:
     settings = _settings(request)
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", name):
         raise HTTPException(status_code=400, detail="invalid recipe name")
-    _user_recipe_path(request, name)  # 409 for a recipe from an extra recipe dir
     removed = False
+    path = _user_recipe_path(request, name)  # 409 for a recipe from an extra recipe dir
+    if path is not None and path.is_file():
+        path.unlink()
+        removed = True
+    # a same-named file that doesn't load (or a shadowed duplicate) goes too,
+    # but never a file that holds a different recipe
     for suffix in (".yaml", ".yml"):
         path = settings.recipes_dir / f"{name}{suffix}"
-        if path.is_file():
-            path.unlink()
-            removed = True
-    if not removed:
-        path = _user_recipe_path(request, name)
-        if path is not None and path.is_file():
+        if path.is_file() and _file_recipe_name(path) in (None, name):
             path.unlink()
             removed = True
     if not removed:
@@ -455,6 +487,8 @@ async def create_job(request: Request) -> dict:
 
 
 def _expand_or_400(raw: str) -> Path:
+    if "\x00" in raw:
+        raise HTTPException(status_code=400, detail="path contains a NUL byte")
     try:
         return Path(raw).expanduser()
     except RuntimeError:  # ~nosuchuser/...: no home directory to expand to
@@ -574,6 +608,8 @@ def job_thumb(request: Request, job_id: str, idx: int, kind: str) -> FileRespons
 def job_output(request: Request, job_id: str, relpath: str) -> FileResponse:
     job = _job_or_404(request, job_id)
     out_dir = Path(job["output_dir"]).resolve()
+    if "\x00" in relpath:
+        raise HTTPException(status_code=404, detail="output not found")
     candidate = (out_dir / relpath).resolve()
     if not candidate.is_relative_to(out_dir):
         raise HTTPException(status_code=400, detail="path escapes the job output directory")
@@ -668,13 +704,31 @@ async def events_stream(request: Request) -> StreamingResponse:
             owned[job_id] = found.get("user_id") == actor.user_id
         return owned[job_id]
 
+    async def still_allowed() -> bool:
+        """Re-check the credentials of a long-lived stream: a user disabled,
+        demoted or logged out must not keep receiving events."""
+        nonlocal actor
+        try:
+            fresh = await asyncio.to_thread(get_actor, request)
+        except HTTPException:
+            return False
+        if fresh.kind != actor.kind or fresh.user_id != actor.user_id:
+            return False
+        actor = fresh  # picks up a role change
+        return True
+
     async def generator():
         queue = bus.subscribe()
+        checked = time.monotonic()
         try:
             yield ": connected\n\n"
             while True:
                 if await request.is_disconnected():
                     break
+                if time.monotonic() - checked >= AUTH_RECHECK_SECONDS:
+                    if not await still_allowed():
+                        break
+                    checked = time.monotonic()
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15.0)
                     if await visible(event):
