@@ -275,3 +275,188 @@ class TestDpi:
         img = load_image(src)
         assert (img.width, img.height) == (20, 40)
         assert img.dpi == (72, 300)
+
+
+# ---------------------------------------------------------------------------
+# 0.5.0
+# ---------------------------------------------------------------------------
+
+
+class TestOutputNames:
+    def test_names_collide_case_insensitively(self):
+        # IMG_1.JPG and IMG_1.jpg are one file on macOS, SMB shares and exFAT
+        names = JobNames({"IMG_0001.JPG"})
+        assert names.reserve("IMG_0001.jpg") == "IMG_0001-2.jpg"
+        assert names.reserve("img_0001-2.JPG") == "img_0001-2-2.JPG"
+
+    def test_protected_folder_never_hands_out_an_existing_file(self, tmp_path):
+        (tmp_path / "logo.png").write_bytes(b"the user's own file")
+        names = JobNames({"logo.jpg"}, protect_dir=tmp_path)
+        assert names.reserve("logo.png") == "logo-2.png"
+        assert names.reserve("other.png") == "other.png"
+
+
+class TestUploadNames:
+    def test_overlong_extension_still_fits(self):
+        from batchroom.core.inputs import safe_upload_name
+
+        name = safe_upload_name("notes." + "x" * 260, "upload")
+        assert len(name.encode("utf-8")) <= 200
+        assert name.startswith("notes.")
+        assert safe_upload_name("photo.jpeg", "upload") == "photo.jpeg"
+
+
+def _recipe(steps: str, output: str = "") -> str:
+    return f"name: t-recipe\nsteps:\n{steps}" + (f"output:\n{output}" if output else "")
+
+
+class TestRecipeLoadChecks:
+    @pytest.mark.parametrize("pattern", ["{Original}-web", "{ original }", "{original", "{date:%Y}"])
+    def test_malformed_rename_variables_are_rejected(self, pattern):
+        with pytest.raises(RecipeError, match="malformed rename variable"):
+            load_recipe_text(_recipe(f"  - op: rename\n    pattern: \"{pattern}\"\n"))
+
+    def test_valid_rename_still_loads(self):
+        load_recipe_text(_recipe("  - op: rename\n    pattern: \"{original}-{width}x{height}\"\n"))
+
+    @pytest.mark.parametrize("steps", [
+        "  - op: resize\n    size: 20000x15000\n",
+        "  - op: resize\n    width: 20000\n    height: 15000\n",
+        "  - op: preset-pack\n    presets:\n      - { name: big, size: 16000x16000 }\n",
+    ])
+    def test_fixed_sizes_over_the_pixel_limit_fail_at_load(self, steps):
+        with pytest.raises(RecipeError, match="MP safety limit"):
+            load_recipe_text(_recipe(steps))
+
+    @pytest.mark.parametrize("steps,output", [
+        ("  - op: resize\n    size: 17000x400\n  - op: convert\n    format: webp\n", ""),
+        ("  - op: resize\n    width: 17000\n    height: 400\n", "  format: webp\n"),
+    ])
+    def test_webp_resize_past_the_side_limit_fails_at_load(self, steps, output):
+        with pytest.raises(RecipeError, match="WebP images are at most"):
+            load_recipe_text(_recipe(steps, output))
+
+    def test_webp_limit_only_applies_to_the_final_size(self):
+        load_recipe_text(_recipe(
+            "  - op: resize\n    size: 17000x400\n  - op: resize\n    size: 1000x400\n"
+            "  - op: convert\n    format: webp\n"
+        ))
+
+    def test_convert_before_preset_pack_is_rejected(self):
+        with pytest.raises(RecipeError, match="no effect before preset-pack"):
+            load_recipe_text(_recipe(
+                "  - op: convert\n    format: png\n"
+                "  - op: preset-pack\n    presets:\n      - { name: s, size: 32x32 }\n"
+            ))
+
+    def test_output_format_with_preset_pack_is_rejected(self):
+        with pytest.raises(RecipeError, match="output.format, output.quality has no effect"):
+            load_recipe_text(_recipe(
+                "  - op: preset-pack\n    presets:\n      - { name: s, size: 32x32 }\n",
+                "  format: webp\n  quality: 80\n",
+            ))
+
+    def test_builtin_recipes_still_load(self):
+        for path in BUILTIN_RECIPES_DIR.glob("*.yaml"):
+            load_recipe_file(path, builtin=True)
+
+    def test_unquoted_aspect_gets_a_clear_message(self):
+        with pytest.raises(RecipeError, match="in quotes"):
+            load_recipe_text(_recipe("  - op: composite\n    aspect: 4:5\n"))
+
+    def test_non_utf8_recipe_file_is_a_problem_not_a_crash(self, tmp_path):
+        from batchroom.core.recipe import discover_recipes
+
+        (tmp_path / "win.yaml").write_text(_recipe("  - op: convert\n    format: png\n"),
+                                           encoding="utf-16")
+        recipes, problems = discover_recipes([tmp_path])
+        assert recipes == {}
+        assert any("not UTF-8" in p for p in problems)
+
+
+class TestGuidedFilter:
+    def test_matches_the_textbook_formulation(self):
+        from batchroom.core.matting import guided_filter
+
+        def box(x, r):
+            pad = np.pad(x, r, mode="constant")
+            ones = np.pad(np.ones_like(x), r, mode="constant")
+            k = 2 * r + 1
+            win = np.lib.stride_tricks.sliding_window_view
+            return win(pad, (k, k)).sum(axis=(2, 3)) / win(ones, (k, k)).sum(axis=(2, 3))
+
+        def reference(i, p, r, eps):
+            mi, mp = box(i, r), box(p, r)
+            a = (box(i * p, r) - mi * mp) / (box(i * i, r) - mi * mi + eps)
+            b = mp - a * mi
+            return np.clip(box(a, r) * i + box(b, r), 0.0, 1.0)
+
+        rng = np.random.default_rng(3)
+        guide, src = rng.random((41, 57)), rng.random((41, 57))
+        for r in (1, 4, 30):
+            np.testing.assert_allclose(guided_filter(guide, src, r, 1e-4),
+                                       reference(guide, src, r, 1e-4), atol=1e-9)
+
+    def test_inputs_are_not_modified(self):
+        from batchroom.core.matting import guided_filter
+
+        rng = np.random.default_rng(4)
+        guide, src = rng.random((20, 30)), rng.random((20, 30))
+        g0, s0 = guide.copy(), src.copy()
+        guided_filter(guide, src, 3)
+        assert np.array_equal(guide, g0) and np.array_equal(src, s0)
+
+
+class TestUpscaleEdges:
+    def test_hidden_background_colour_does_not_reach_visible_edges(self):
+        from types import SimpleNamespace
+
+        from batchroom.core.image_io import ImageData
+        from batchroom.ops.base import ItemState
+        from batchroom.ops.upscale import UpscaleOp, UpscaleParams
+
+        class NearestX4:  # an exact stand-in for a x4 model
+            def get_inputs(self):
+                return [SimpleNamespace(name="x")]
+
+            def run(self, _outputs, feeds):
+                return [feeds["x"].repeat(4, axis=2).repeat(4, axis=3)]
+
+        class Models:
+            def ensure_session(self, *args, **kwargs):
+                return NearestX4()
+
+        px = np.zeros((32, 32, 4), np.uint8)
+        px[:, :16] = (255, 255, 255, 255)  # white subject
+        px[:, 16:] = (0, 255, 0, 0)        # removed green background, still under alpha 0
+        state = ItemState(image=ImageData(pixels=px), original_stem="a")
+        out = UpscaleOp().apply(
+            state, UpscaleParams(scale=2, model="realesrgan-x4"), PipelineContext(models=Models())
+        ).image.pixels
+        visible = out[..., 3] > 0
+        assert out[visible][:, [0, 2]].min() >= 250
+
+
+class TestOddSources:
+    @pytest.mark.parametrize("mode,value", [("F", 0.5), ("I", 32768)])
+    def test_float_and_int32_grey_tiffs_keep_their_tone(self, tmp_path, mode, value):
+        path = tmp_path / f"{mode}.tiff"
+        Image.new(mode, (8, 8), value).save(path)
+        pixels = load_image(path).pixels
+        assert 120 <= int(pixels[0, 0, 0]) <= 136
+
+    def test_oversized_exif_is_dropped_for_jpeg_not_fatal(self):
+        from batchroom.core.image_io import ImageData, encode_image
+
+        exif = Image.Exif()
+        exif[0x010E] = "x" * 70000  # ImageDescription bigger than a JPEG segment
+        image = ImageData(pixels=np.full((8, 8, 4), 200, np.uint8), exif=exif.tobytes())
+        data = encode_image(image, "jpg", keep_metadata=True)
+        assert Image.open(io.BytesIO(data)).format == "JPEG"
+
+    def test_jpeg_drops_a_dpi_it_cannot_store(self):
+        from batchroom.core.image_io import ImageData, encode_image
+
+        image = ImageData(pixels=np.full((8, 8, 4), 200, np.uint8), dpi=(100000.0, 100000.0))
+        data = encode_image(image, "jpg")
+        assert Image.open(io.BytesIO(data)).info.get("dpi", (72, 72))[0] != 34464

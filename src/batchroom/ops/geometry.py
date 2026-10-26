@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from ..core import imaging
 from ..core.errors import OpError
@@ -30,7 +30,9 @@ class ResizeParams(OpParams):
             raise ValueError("resize needs 'size', 'width', 'height' or 'scale'")
         # validate eagerly so recipe validation catches bad values
         if self.size is not None:
-            imaging.parse_size(self.size)
+            imaging.check_fixed_size(*imaging.parse_size(self.size))
+        elif self.width is not None and self.height is not None:
+            imaging.check_fixed_size(self.width, self.height)
         imaging.parse_color(self.background)
         imaging.parse_padding(self.padding)
         return self
@@ -98,6 +100,14 @@ class CompositeParams(OpParams):
     trim: bool = True
     aspect: str = "auto"
     threshold: int = Field(default=8, ge=0, le=255)
+
+    @field_validator("aspect", mode="before")
+    @classmethod
+    def _aspect_quoted(cls, value):
+        if isinstance(value, int) and not isinstance(value, bool):
+            # YAML 1.1 reads an unquoted 4:5 as the sexagesimal number 245
+            raise ValueError("put the aspect ratio in quotes, e.g. aspect: \"4:5\"")
+        return value
 
     @model_validator(mode="after")
     def _check(self):

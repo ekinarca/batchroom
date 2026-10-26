@@ -57,6 +57,14 @@ def parse_size(value: str | list | tuple | dict) -> tuple[int, int]:
     raise OpError(f"invalid size {value!r}")
 
 
+def check_fixed_size(width: int, height: int) -> None:
+    """Recipe validation: a fixed target that every item would fail on."""
+    if width * height > MAX_OUTPUT_PIXELS:
+        raise ValueError(
+            f"size {width}x{height} exceeds the {MAX_OUTPUT_PIXELS // 1_000_000} MP safety limit"
+        )
+
+
 def check_output_size(width: int, height: int, *, op: str) -> None:
     """Refuse results too large to process safely (per item, clean error)."""
     if width * height > MAX_OUTPUT_PIXELS:

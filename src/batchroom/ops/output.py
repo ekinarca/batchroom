@@ -37,6 +37,12 @@ def validate_pattern(pattern: str) -> str:
         )
     if not pattern.strip():
         raise ValueError("pattern is empty")
+    if "{" in _VAR_RE.sub("", pattern) or "}" in _VAR_RE.sub("", pattern):
+        # {Original}, { original }, an unclosed {original... would end up in
+        # every file name as literal text
+        raise ValueError(
+            "malformed rename variable: write them in lowercase braces like {original}"
+        )
     return pattern
 
 
@@ -144,6 +150,7 @@ class PresetSpec(OpParams):
     @model_validator(mode="after")
     def _check(self):
         width, height = imaging.parse_size(self.size)
+        imaging.check_fixed_size(width, height)
         fmt = normalize_format(self.format)
         if fmt == "webp" and max(width, height) > WEBP_MAX_SIDE:
             raise ValueError(

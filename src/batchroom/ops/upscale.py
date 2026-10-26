@@ -3,7 +3,9 @@
 CPU honesty (plan §8.2): 4x ESRGAN on CPU is slow — tens of seconds per
 image. The op reports per-tile progress so the queue UI can show honest
 ETAs, and ``model: lanczos`` is always available as the instant path.
-Alpha channels are upscaled separately with Lanczos, the standard practice.
+Alpha channels are upscaled separately with Lanczos, the standard practice;
+the colour hidden under transparent pixels is replaced by the visible
+colour around it first, so it can't bleed onto the edges.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from pydantic import Field, field_validator
 
 from ..core import imaging
 from ..core.errors import ModelError, OpError
+from ..core.matting import _box_sum
 from ..models.registry import CATALOG, get_spec
 from .base import ItemState, Op, OpParams, PipelineContext, register
 
@@ -50,7 +53,9 @@ def _tiled_sr(session, rgb01: np.ndarray, model_scale: int, tile: int, ctx: Pipe
     """Run super-resolution tile by tile with overlap to hide seams."""
     h, w = rgb01.shape[:2]
     pad = 16
-    out = np.zeros((h * model_scale, w * model_scale, 3), dtype=np.float32)
+    # uint8 straight away: a float32 result plus its x255 copy needed ~37 bytes
+    # per output pixel, ~8 GiB at the size limit
+    out = np.zeros((h * model_scale, w * model_scale, 3), dtype=np.uint8)
     input_name = session.get_inputs()[0].name
     xs = list(range(0, w, tile))
     ys = list(range(0, h, tile))
@@ -74,9 +79,34 @@ def _tiled_sr(session, rgb01: np.ndarray, model_scale: int, tile: int, ctx: Pipe
             out[
                 y0 * model_scale : y0 * model_scale + out_h,
                 x0 * model_scale : x0 * model_scale + out_w,
-            ] = sr[oy0 : oy0 + out_h, ox0 : ox0 + out_w]
+            ] = np.rint(sr[oy0 : oy0 + out_h, ox0 : ox0 + out_w] * 255.0)
             done += 1
             ctx.progress(f"upscale tile {done}/{total}")
+    return out
+
+
+def _bleed_under_alpha(pixels: np.ndarray, radius: int = 8) -> np.ndarray:
+    """RGB in [0, 1] for super-resolution, with the colour under (semi-)transparent
+    pixels pulled toward the visible colours around them.
+
+    A cut-out still holds the removed background's colour where it is
+    transparent; the model and the downsample spread it onto visible edges as
+    a coloured fringe. Mixing in the alpha-weighted neighbourhood colour by
+    ``1 - alpha`` keeps opaque pixels exact and weighs the rest the way
+    premultiplied compositing would."""
+    weight = pixels[:, :, 3].astype(np.float64) / 255.0
+    norm = _box_sum(weight, radius)
+    covered = norm > 1e-6
+    total = float(weight.sum())
+    out = np.empty(pixels.shape[:2] + (3,), dtype=np.float32)
+    for c in range(3):
+        plane = pixels[:, :, c].astype(np.float64) / 255.0
+        bleed = _box_sum(plane * weight, radius)
+        # far from anything visible: the image's mean visible colour
+        fallback = float((plane * weight).sum()) / total if total > 0 else 0.0
+        np.divide(bleed, norm, out=bleed, where=covered)
+        bleed[~covered] = fallback
+        out[:, :, c] = plane * weight + bleed * (1.0 - weight)
     return out
 
 
@@ -131,10 +161,14 @@ class UpscaleOp(Op):
         session = ctx.models.ensure_session(spec.id, progress_text=ctx.progress)
         ctx.progress(f"upscale ({spec.id})")
 
-        rgb01 = img.pixels[:, :, :3].astype(np.float32) / 255.0
-        sr = _tiled_sr(session, rgb01, spec.scale, params.tile, ctx)
-        sr8 = np.rint(sr * 255.0).astype(np.uint8)
-        del sr
+        alpha = img.pixels[:, :, 3]
+        has_alpha = bool((alpha != 255).any())
+        if has_alpha:
+            rgb01 = _bleed_under_alpha(img.pixels)
+        else:
+            rgb01 = img.pixels[:, :, :3].astype(np.float32) / 255.0
+        sr8 = _tiled_sr(session, rgb01, spec.scale, params.tile, ctx)
+        del rgb01
 
         # model_scale may exceed the requested scale (x4 model, scale: 2) — downsample.
         # Opaque RGB: Pillow's 8-bit resample is exact here and needs no float copies.
@@ -145,8 +179,7 @@ class UpscaleOp(Op):
                 )
             )
 
-        alpha = img.pixels[:, :, 3]
-        if (alpha != 255).any():
+        if has_alpha:
             alpha_up = np.asarray(
                 Image.fromarray(alpha, "L").resize((target_w, target_h), Image.Resampling.LANCZOS)
             )

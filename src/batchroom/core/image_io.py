@@ -138,6 +138,9 @@ class ImageData:
         return img
 
 
+_JPEG_MAX_EXIF = 65533 - 8  # segment length field minus the "Exif\0\0" header and itself
+
+
 def _valid_dpi(dpi) -> tuple[float, float] | None:
     """A TIFF with XResolution 0/0 reads as (nan, nan), which no encoder accepts."""
     try:
@@ -163,6 +166,17 @@ def pil_to_rgba_array(pil: Image.Image) -> np.ndarray:
         # turns almost every pixel white. Scale to 8-bit first.
         wide = np.asarray(pil).astype(np.uint32)
         pil = Image.fromarray(((wide * 255 + 32767) // 65535).astype(np.uint8))
+    elif pil.mode in ("I", "F"):
+        # 32-bit int / float grey (scientific TIFFs, 16-bit data stored as I):
+        # convert() clips to 0-255, so a 0-1 float image came out black and
+        # 16-bit-range ints white. Scale the actual range down instead.
+        wide = np.nan_to_num(np.asarray(pil, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+        top = float(wide.max()) if wide.size else 0.0
+        if pil.mode == "F" and top <= 1.0:
+            wide = wide * 255.0
+        elif top > 255.0:
+            wide = wide * (255.0 / (65535.0 if top <= 65535.0 else top))
+        pil = Image.fromarray(np.rint(np.clip(wide, 0.0, 255.0)).astype(np.uint8))
     if pil.mode != "RGBA":
         pil = pil.convert("RGBA")
     return np.asarray(pil, dtype=np.uint8).copy()
@@ -326,10 +340,15 @@ def encode_image(
 
     if image.icc_profile:
         options["icc_profile"] = image.icc_profile
-    if keep_metadata and image.exif and fmt in {"jpg", "webp", "png", "tiff", "avif", "heic"}:
+    # a JPEG APP1 segment holds at most 64 KB; a bigger block (from a PNG,
+    # TIFF or WebP source) would fail the whole item, so it is dropped
+    exif_fits = not (fmt == "jpg" and image.exif and len(image.exif) > _JPEG_MAX_EXIF)
+    if keep_metadata and image.exif and exif_fits and fmt in {
+        "jpg", "webp", "png", "tiff", "avif", "heic",
+    }:
         options["exif"] = image.exif
-    if image.dpi:
-        options["dpi"] = image.dpi
+    if image.dpi and not (fmt == "jpg" and max(image.dpi) > 65535):
+        options["dpi"] = image.dpi  # JPEG stores 16 bits: 100000 dpi would wrap around
 
     buf = io.BytesIO()
     try:

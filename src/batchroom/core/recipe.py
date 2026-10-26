@@ -33,6 +33,7 @@ import yaml
 from ..ops.base import Op, OpParams, get_op
 from .errors import ImageIOError, RecipeError
 from .image_io import FORMATS, normalize_format
+from .imaging import parse_size
 
 BUILTIN_RECIPES_DIR = Path(__file__).resolve().parent.parent / "recipes"
 
@@ -230,6 +231,10 @@ def parse_recipe(
             )
         flags[key] = value
     output = OutputSpec(structure=structure, format=out_format, quality=quality, **flags)
+    if pack_at is not None:
+        _check_pack_formats(steps, pack_at, out_raw, name)
+    else:
+        _check_webp_size(steps, out_format, name)
 
     try:
         version = int(data.get("version", 1))
@@ -251,6 +256,59 @@ def parse_recipe(
     )
 
 
+def _check_pack_formats(steps: list[RecipeStep], pack_at: int, out_raw: dict, name: str) -> None:
+    """Every preset is encoded with its own format/quality: a ``convert`` before
+    the pack, or ``output.format``/``quality``/``lossless``, would be ignored."""
+    for i, step in enumerate(steps[:pack_at]):
+        if step.op.name == "convert":
+            raise RecipeError(
+                "'convert' has no effect before preset-pack",
+                recipe=name,
+                step=i,
+                hint="set format/quality on each preset instead"
+                " (output.keep_metadata keeps EXIF)",
+            )
+    ignored = sorted(k for k in ("format", "quality", "lossless") if k in out_raw)
+    if ignored:
+        raise RecipeError(
+            f"output.{', output.'.join(ignored)} has no effect with preset-pack",
+            recipe=name,
+            hint="set format/quality/lossless on each preset instead",
+        )
+
+
+# steps that leave the image size as it is
+_SIZE_KEEPING = {"convert", "rename", "strip-metadata", "remove-background"}
+
+
+def _check_webp_size(steps: list[RecipeStep], out_format: str | None, name: str) -> None:
+    """A fixed resize past libwebp's side limit, written as WebP, fails every
+    item: refuse it at load like the same preset."""
+    from ..ops.output import WEBP_MAX_SIDE
+
+    size: tuple[int, int] | None = None
+    fmt = out_format
+    at = None
+    for i, step in enumerate(steps):
+        params = step.params
+        if step.op.name == "convert":
+            fmt = normalize_format(params.format)
+        elif step.op.name == "resize" and params.size is not None:
+            size, at = parse_size(params.size), i
+        elif step.op.name == "resize" and params.width and params.height:
+            size, at = (params.width, params.height), i
+        elif step.op.name not in _SIZE_KEEPING:
+            size = None
+    if fmt == "webp" and size is not None and max(size) > WEBP_MAX_SIDE:
+        raise RecipeError(
+            f"WebP images are at most {WEBP_MAX_SIDE} px per side, the resize makes"
+            f" {size[0]}x{size[1]}",
+            recipe=name,
+            step=at,
+            hint="use a smaller size or another format",
+        )
+
+
 def load_recipe_text(text: str, *, path: Path | None = None, builtin: bool = False) -> Recipe:
     try:
         data = yaml.safe_load(text)
@@ -264,6 +322,10 @@ def load_recipe_file(path: str | Path, *, builtin: bool = False) -> Recipe:
     path = Path(path)
     try:
         text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:  # e.g. saved as UTF-16 by Notepad
+        raise RecipeError(
+            f"cannot read recipe file {path}: not UTF-8 text", hint="save it as UTF-8"
+        ) from exc
     except OSError as exc:
         raise RecipeError(f"cannot read recipe file {path}: {exc}") from exc
     return load_recipe_text(text, path=path, builtin=builtin)

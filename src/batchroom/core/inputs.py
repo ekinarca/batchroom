@@ -46,7 +46,7 @@ def walk_files(root: Path, *, exclude_dirs: Iterable[Path] = ()) -> Iterator[Pat
     for path in exclude_dirs:
         try:
             excluded.add(Path(path).resolve())
-        except OSError:
+        except (OSError, ValueError):  # ValueError: a NUL byte in the path
             continue
     for dirpath, dirnames, filenames in os.walk(root):
         keep = []
@@ -57,7 +57,7 @@ def walk_files(root: Path, *, exclude_dirs: Iterable[Path] = ()) -> Iterator[Pat
                 try:
                     if Path(dirpath, name).resolve() in excluded:
                         continue
-                except OSError:
+                except (OSError, ValueError):
                     continue
             keep.append(name)
         dirnames[:] = keep  # prune in place: os.walk honors this (topdown)
@@ -88,6 +88,8 @@ def safe_upload_name(raw: str, fallback: str, *, max_bytes: int = 200) -> str:
     ext = ext.strip(" .")
     if not stem:
         stem = fallback
+    if len(ext.encode("utf-8")) > 16:  # not a real extension: keep it in the stem
+        stem, ext = f"{stem}.{ext}", ""
     ext = f".{ext}" if ext else ""
     while len((stem + ext).encode("utf-8")) > max_bytes and len(stem) > 1:
         stem = stem[:-1]

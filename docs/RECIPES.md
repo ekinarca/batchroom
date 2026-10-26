@@ -14,8 +14,8 @@ steps:                     # required: at least one op
 output:                    # optional
   structure: per-preset-folder      # or: flat
   manifest: true
-  format: jpg              # default output format when no convert/preset step
-  quality: 90
+  format: jpg              # default output format when no convert step
+  quality: 90              # (format/quality/lossless: not with preset-pack)
   keep_metadata: false     # EXIF is stripped unless true
 ```
 
@@ -32,13 +32,21 @@ only the final write encodes. `convert` and `preset-pack` set the output
 encoding; everything upstream is quality-neutral.
 
 Rename pattern variables: `{original}` `{preset}` `{index}` `{recipe}`
-`{date}` (the job's start date, `YYYYMMDD`) `{width}` `{height}`.
+`{date}` (the job's start date, `YYYYMMDD`) `{width}` `{height}`. They are
+lowercase in plain braces; anything else in braces (`{Original}`,
+`{ original }`, an unclosed `{original`) is rejected at load.
+
+Unquoted ratios like `aspect: 4:5` are read by YAML as a number: write
+`aspect: "4:5"`.
 
 Geometry limits, checked when the recipe is validated: sizes are
 1–20000 px per side, percentage padding stays under 50%, pixel padding
-is 0–20000. Any single result above ~240 MP (resize, composite canvas,
-preset, upscale) fails that item with a clear error instead of
-exhausting the server's memory.
+is 0–20000. A fixed size above ~240 MP (a `resize` with `size` or
+`width` + `height`, a preset) is rejected at load, and so is a fixed
+resize that ends up as WebP wider or taller than 16383 px. Any other
+single result above ~240 MP (scale factors, composite canvas, upscale)
+fails that item with a clear error instead of exhausting the server's
+memory.
 
 ---
 
@@ -110,7 +118,9 @@ Parameters a `convert` step leaves out keep the recipe's `output:` values.
 Fan out to multiple outputs. One per recipe. Only `rename` and
 `strip-metadata` may follow it: the presets are already sized when it
 runs, so a later pixel or format step is rejected at load time instead of
-being silently ignored. Each preset:
+being silently ignored. Each preset is encoded with its own `format` /
+`quality` / `lossless`, so a `convert` step before the pack and
+`output.format` / `quality` / `lossless` are rejected too. Each preset:
 
 | field | default | notes |
 |---|---|---|
@@ -126,7 +136,10 @@ being silently ignored. Each preset:
 ### `rename`
 
 `pattern`: e.g. `"{original}-{preset}-{width}x{height}"`. Unsafe filename
-characters are replaced; collisions get `-2`, `-3`… automatically.
+characters are replaced; collisions get `-2`, `-3`… automatically. Names
+are compared case-insensitively (`IMG_1.JPG` and `IMG_1.jpg` are one file
+on macOS, Windows/SMB shares and exFAT), and when the output folder is
+also an input folder, no existing file there is ever replaced.
 
 ### `strip-metadata`
 

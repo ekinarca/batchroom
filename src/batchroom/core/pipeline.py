@@ -72,24 +72,41 @@ class ItemResult:
 
 
 class JobNames:
-    """Thread-safe reservation of output paths within one job (collision-proof)."""
+    """Thread-safe reservation of output paths within one job (collision-proof).
 
-    def __init__(self, taken: set[str] | None = None):
-        self._taken: set[str] = set(taken or ())
+    Names are compared case-insensitively: on macOS, Windows/SMB shares and
+    exFAT ``IMG_1.JPG`` and ``IMG_1.jpg`` are the same file. With
+    ``protect_dir`` (an output folder that is also an input folder) a name
+    whose file already exists there is never taken either, so originals the
+    recipe skipped can't be replaced by another item's result."""
+
+    def __init__(self, taken: set[str] | None = None, *, protect_dir: Path | None = None):
+        self._taken: set[str] = {name.casefold() for name in taken or ()}
+        self._protect_dir = protect_dir
         self._lock = threading.Lock()
+
+    def _free(self, relpath: str) -> bool:
+        if relpath.casefold() in self._taken:
+            return False
+        if self._protect_dir is not None:
+            try:
+                return not (self._protect_dir / relpath).exists()
+            except (OSError, ValueError):
+                return False
+        return True
 
     def reserve(self, relpath: str) -> str:
         with self._lock:
             candidate = relpath
-            if candidate in self._taken:
+            if not self._free(candidate):
                 stem, dot, ext = relpath.rpartition(".")
                 base = stem if dot else relpath
                 suffix_ext = f".{ext}" if dot else ""
                 n = 2
-                while f"{base}-{n}{suffix_ext}" in self._taken:
+                while not self._free(f"{base}-{n}{suffix_ext}"):
                     n += 1
                 candidate = f"{base}-{n}{suffix_ext}"
-            self._taken.add(candidate)
+            self._taken.add(candidate.casefold())
             return candidate
 
 
