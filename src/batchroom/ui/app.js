@@ -3,11 +3,17 @@
 "use strict";
 
 /* ================= state ================= */
+// Blocked site data (privacy settings, some embedded browsers) makes every
+// localStorage access throw; that must not take the whole UI down.
+const store = {
+  get(key) { try { return localStorage.getItem(key); } catch { return null; } },
+  set(key, value) { try { localStorage.setItem(key, value); } catch { /* not persisted */ } },
+};
 const S = {
-  lang: localStorage.getItem("br_lang") || (navigator.language || "en").slice(0, 2),
+  lang: store.get("br_lang") || (navigator.language || "en").slice(0, 2),
   strings: {},
   languages: [],
-  apiKey: localStorage.getItem("br_key") || "",
+  apiKey: store.get("br_key") || "",
   authRequired: false,
   me: null,            // /api/auth/me: {authenticated, multiuser, user, role, license}
   view: "process",
@@ -19,7 +25,7 @@ const S = {
   users: [],
   system: null,
   selectedFiles: [],
-  selectedRecipe: localStorage.getItem("br_recipe") || "",
+  selectedRecipe: store.get("br_recipe") || "",
   selectedPriority: 0,
   pullProgress: {},   // model id -> pct
   itemProgress: {},   // "jobId:idx" -> latest step message of a running item
@@ -62,7 +68,7 @@ async function loadLang(code) {
   const data = await api(`/api/i18n/${encodeURIComponent(code)}`);
   S.strings = data;
   S.lang = code;
-  localStorage.setItem("br_lang", code);
+  store.set("br_lang", code);
   const meta = S.languages.find((l) => l.code === code);
   document.documentElement.lang = code;
   document.documentElement.dir = meta && meta.rtl ? "rtl" : "ltr";
@@ -191,8 +197,8 @@ function showTour() {
   cta.focus();
 }
 function maybeShowTour() {
-  if (localStorage.getItem(TOUR_KEY)) return;
-  localStorage.setItem(TOUR_KEY, "1"); // first sighting counts; reopen lives in the sidebar
+  if (store.get(TOUR_KEY)) return;
+  store.set(TOUR_KEY, "1"); // first sighting counts; reopen lives in the sidebar
   showTour();
 }
 
@@ -209,7 +215,11 @@ function route() {
   const hash = location.hash.replace(/^#\/?/, "");
   const [view, arg] = hash.split("/");
   S.view = VIEWS.includes(view) && viewVisible(view) ? view : "process";
-  S.viewArg = arg ? decodeURIComponent(arg) : null;
+  try {
+    S.viewArg = arg ? decodeURIComponent(arg) : null;
+  } catch {  // a malformed link (#/queue/%E0) must not abort boot
+    S.viewArg = null;
+  }
   render();
 }
 function nav(to) { location.hash = `#/${to}`; }
@@ -266,7 +276,7 @@ function renderNav() {
 function viewProcess(main) {
   const recipeSel = h("select", {
     id: "recipe-select",
-    onchange: (e) => { S.selectedRecipe = e.target.value; localStorage.setItem("br_recipe", e.target.value); },
+    onchange: (e) => { S.selectedRecipe = e.target.value; store.set("br_recipe", e.target.value); },
   }, ...S.recipes.map((r) =>
     h("option", { value: r.name, selected: r.name === S.selectedRecipe }, `${r.name} — ${r.description}`.slice(0, 90))));
 
@@ -449,6 +459,7 @@ async function submitJob() {
     nav("queue");
   } catch (err) {
     toast(t("errors.upload_failed", { msg: err.message }), "error");
+    renderFileCards();  // the counter still read "Uploading… 100%"
   } finally {
     btns.forEach((b) => (b.disabled = false));
   }
@@ -472,6 +483,17 @@ function statusChip(status) {
   return h("span", { class: `chip ${map[status] ?? ""}` }, h("span", { class: "dot" }), t(`status.${status}`) );
 }
 
+// API timestamps are UTC (ISO 8601 with offset): show them in the viewer's zone
+function localTime(iso) {
+  const d = iso ? new Date(iso) : null;
+  if (!d || Number.isNaN(d.getTime())) return iso || "";
+  try {
+    return d.toLocaleString(S.lang, { dateStyle: "short", timeStyle: "medium" });
+  } catch {  // a language tag the browser doesn't know
+    return d.toLocaleString();
+  }
+}
+
 function jobCard(job) {
   const total = job.total || 1;
   const pct = (n) => `${(100 * n) / total}%`;
@@ -486,7 +508,7 @@ function jobCard(job) {
     h("div", { class: "row", style: "margin-top:6px" },
       h("span", { class: "chip" }, job.recipe),
       h("span", { class: "faint mono" }, `${job.done + job.failed + job.cancelled}/${job.total}`),
-      h("span", { class: "faint" }, (job.created_at || "").replace("T", " ").replace(/\+.*/, "")),
+      h("span", { class: "faint", dir: "auto" }, localTime(job.created_at)),
       h("span", { class: "chip" }, job.source),
     ),
     h("div", { class: "bar" },
@@ -1179,7 +1201,7 @@ async function boot() {
   $("#auth-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     S.apiKey = $("#auth-key").value.trim();
-    localStorage.setItem("br_key", S.apiKey);
+    store.set("br_key", S.apiKey);
     $("#auth-error").hidden = true;
     try {
       await api("/api/system");
